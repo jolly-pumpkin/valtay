@@ -1,6 +1,7 @@
 import { resolve, dirname } from "path";
 import { readdir } from "node:fs/promises";
-import { detectHosts, pathExists, type HostSpec } from "../detect.ts";
+import { detectHosts, detectMarkers, pathExists, type HostSpec } from "../detect.ts";
+import { SKILL_FILES, SKILL_REL_DIR } from "../skills.ts";
 
 export interface InitOptions {
   /** Target directory. Defaults to the process working directory. */
@@ -11,10 +12,15 @@ export interface InitOptions {
   workspace?: boolean;
   /** Force repo mode, treating the target as a repo root if no .git is found. */
   repo?: boolean;
+  /** Install the valtay-compose skill even without a .claude/ directory. */
+  skill?: boolean;
 }
 
 export type Mode = "repo" | "workspace";
 export type Outcome = "written" | "skipped";
+
+/** `absent` means the root carries no `.claude/`, so nothing was installed. */
+export type SkillOutcome = Outcome | "absent";
 
 export interface InitResult {
   mode: Mode;
@@ -27,6 +33,8 @@ export interface InitResult {
   config: Outcome;
   gitignorePath: string;
   gitignore: Outcome;
+  skillDir: string;
+  skill: SkillOutcome;
 }
 
 /**
@@ -129,15 +137,48 @@ ${rolesTable(hosts)}
 `;
 }
 
-/** Writes `content` to `path` unless it already exists (or `overwrite` is set). */
+/**
+ * Writes `content` to `path` unless it already exists (or `overwrite` is set).
+ * `Bun.write` creates missing parent directories and accepts a `BunFile`, so this
+ * doubles as the copy path for shipped assets.
+ */
 async function writeUnlessPresent(
   path: string,
-  content: string,
+  content: string | Blob,
   overwrite: boolean
 ): Promise<Outcome> {
   if (!overwrite && (await pathExists(path))) return "skipped";
   await Bun.write(path, content);
   return "written";
+}
+
+/**
+ * Copies the valtay-compose skill into `<root>/.claude/skills/`.
+ *
+ * Gated on the `.claude/` marker rather than on the detected hosts, because
+ * `detectHosts` falls back to claude-code for every repo and so would install into
+ * codex-only projects too. Per-file skipping means a hand-edited SKILL.md survives a
+ * re-init while a newly shipped reference file still lands.
+ */
+async function installSkill(
+  root: string,
+  dir: string,
+  options: InitOptions
+): Promise<SkillOutcome> {
+  const hasClaude = (await detectMarkers(root)).includes(".claude/");
+  if (!hasClaude && options.skill !== true) return "absent";
+
+  // Sequential: the assets share parent directories, and Bun.write creates them.
+  let wrote = false;
+  for (const asset of SKILL_FILES) {
+    const outcome = await writeUnlessPresent(
+      resolve(dir, asset.rel),
+      Bun.file(asset.source),
+      options.force === true
+    );
+    if (outcome === "written") wrote = true;
+  }
+  return wrote ? "written" : "skipped";
 }
 
 export async function runInit(options: InitOptions = {}): Promise<InitResult> {
@@ -167,7 +208,21 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
   const gitignorePath = resolve(root, ".valtay", ".gitignore");
   const gitignore = await writeUnlessPresent(gitignorePath, "", false);
 
-  return { mode, root, repos, hosts, configPath, config, gitignorePath, gitignore };
+  const skillDir = resolve(root, SKILL_REL_DIR);
+  const skill = await installSkill(root, skillDir, options);
+
+  return {
+    mode,
+    root,
+    repos,
+    hosts,
+    configPath,
+    config,
+    gitignorePath,
+    gitignore,
+    skillDir,
+    skill,
+  };
 }
 
 export function formatInitResult(result: InitResult): string[] {
@@ -180,6 +235,13 @@ export function formatInitResult(result: InitResult): string[] {
 
   lines.push(note(result.config, "valtay.toml"));
   lines.push(note(result.gitignore, ".valtay/.gitignore"));
+
+  const skillName = `${SKILL_REL_DIR}/`;
+  if (result.skill === "absent") {
+    lines.push(`  skipped ${skillName} (no .claude/ — use --skill)`);
+  } else {
+    lines.push(note(result.skill, skillName));
+  }
 
   if (result.mode === "workspace") {
     lines.push(

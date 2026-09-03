@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, readFile, writeFile, stat } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { runInit } from "./init.ts";
+import { SKILL_FILES, SKILL_NAME, SKILL_REL_DIR } from "../skills.ts";
 
 let root: string;
 
@@ -227,6 +228,113 @@ test("the generated config is valid TOML in both modes", async () => {
   await runInit({ path: ws });
   const wsToml = Bun.TOML.parse(await readFile(resolve(ws, "valtay.toml"), "utf-8")) as any;
   expect(wsToml.workspace.repos).toEqual(["web"]);
+});
+
+/** A repo that already carries Claude config, so the skill install is in scope. */
+async function makeClaudeRepo(...segments: string[]): Promise<string> {
+  const dir = await makeRepo(...segments);
+  await mkdir(resolve(dir, ".claude"), { recursive: true });
+  return dir;
+}
+
+const skillFile = (root: string, rel: string) => resolve(root, SKILL_REL_DIR, rel);
+
+test("the skill is installed into a repo that already has .claude/", async () => {
+  const repo = await makeClaudeRepo("repo");
+
+  const result = await runInit({ path: repo });
+
+  expect(result.skill).toBe("written");
+  expect(result.skillDir).toBe(resolve(repo, ".claude", "skills", SKILL_NAME));
+
+  for (const asset of SKILL_FILES) {
+    expect(await exists(skillFile(repo, asset.rel))).toBe(true);
+  }
+
+  const md = await readFile(skillFile(repo, "SKILL.md"), "utf-8");
+  expect(md.startsWith("---\n")).toBe(true);
+  expect(md).toContain(`name: ${SKILL_NAME}`);
+  expect(md).toContain("description:");
+});
+
+test("without .claude/ the skill is absent and no .claude/ is created", async () => {
+  const repo = await makeRepo("repo");
+  await mkdir(resolve(repo, ".codex"), { recursive: true }); // codex-only project
+
+  const result = await runInit({ path: repo });
+
+  expect(result.skill).toBe("absent");
+  expect(await exists(resolve(repo, ".claude"))).toBe(false);
+});
+
+test("--skill installs into a repo with no .claude/", async () => {
+  const repo = await makeRepo("repo");
+
+  const result = await runInit({ path: repo, skill: true });
+
+  expect(result.skill).toBe("written");
+  expect(await exists(skillFile(repo, "SKILL.md"))).toBe(true);
+});
+
+test("re-running leaves a hand-edited skill alone unless --force", async () => {
+  const repo = await makeClaudeRepo("repo");
+  await runInit({ path: repo });
+  await writeFile(skillFile(repo, "SKILL.md"), "# hand-edited\n");
+
+  const second = await runInit({ path: repo });
+  expect(second.skill).toBe("skipped");
+  expect(await readFile(skillFile(repo, "SKILL.md"), "utf-8")).toBe("# hand-edited\n");
+
+  const forced = await runInit({ path: repo, force: true });
+  expect(forced.skill).toBe("written");
+  expect(await readFile(skillFile(repo, "SKILL.md"), "utf-8")).toContain(
+    `name: ${SKILL_NAME}`
+  );
+});
+
+test("a missing reference file is restored without touching a hand-edited SKILL.md", async () => {
+  const repo = await makeClaudeRepo("repo");
+  await runInit({ path: repo });
+  await writeFile(skillFile(repo, "SKILL.md"), "# hand-edited\n");
+  await rm(skillFile(repo, "reference/format.md"));
+
+  const second = await runInit({ path: repo });
+
+  expect(second.skill).toBe("written");
+  expect(await exists(skillFile(repo, "reference/format.md"))).toBe(true);
+  expect(await readFile(skillFile(repo, "SKILL.md"), "utf-8")).toBe("# hand-edited\n");
+});
+
+test("workspace mode installs the skill at the workspace root", async () => {
+  const ws = resolve(root, "work");
+  await mkdir(resolve(ws, ".claude"), { recursive: true });
+  const web = await makeRepo("work", "web");
+
+  const result = await runInit({ path: ws });
+
+  expect(result.mode).toBe("workspace");
+  expect(result.skill).toBe("written");
+  expect(await exists(skillFile(ws, "SKILL.md"))).toBe(true);
+  // Child repos are left alone — you init each one separately.
+  expect(await exists(skillFile(web, "SKILL.md"))).toBe(false);
+});
+
+test("every shipped skill asset resolves and carries skill frontmatter", async () => {
+  expect(SKILL_FILES.length).toBeGreaterThan(0);
+
+  for (const asset of SKILL_FILES) {
+    const file = Bun.file(asset.source);
+    expect(await file.exists()).toBe(true);
+    const text = await file.text();
+    expect(text.trim().length).toBeGreaterThan(0);
+  }
+
+  const skillMd = SKILL_FILES.find((a) => a.rel === "SKILL.md");
+  expect(skillMd).toBeDefined();
+
+  const [, frontmatter] = (await Bun.file(skillMd!.source).text()).split("---\n");
+  expect(frontmatter).toContain(`name: ${SKILL_NAME}`);
+  expect(frontmatter).toContain("description:");
 });
 
 test("repo names needing escapes stay valid TOML", async () => {
