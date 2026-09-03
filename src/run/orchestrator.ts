@@ -42,6 +42,22 @@ export async function artifactsForGate(run: Run, gate: GateId): Promise<Artifact
 }
 
 /**
+ * Clears a halted run so the failed phase can be attempted again.
+ *
+ * A failed phase has already had design.md §18's retries; the run halts rather than
+ * looping, because a third blind attempt at something broken is waste. Retrying is
+ * therefore a deliberate act — you fixed the cause, in the harness or in the repo —
+ * and never something `advance` decides on its own.
+ */
+export async function retry(run: Run): Promise<string[]> {
+  const state = await readState(run);
+  if (state.status !== "failed") return [`Run is ${state.status} — nothing to retry.`];
+
+  await writeState(run, { ...state, status: "pending", rerun: true, note: undefined });
+  return [`Retrying ${phase(state.phase).title}.`, ""];
+}
+
+/**
  * Runs phases until something needs a human.
  *
  * The orchestrator makes no model calls of its own (invariant 1) and holds no state
@@ -57,6 +73,7 @@ export async function advance(run: Run, spec?: Runspec): Promise<string[]> {
     const state = await readState(run);
     if (state.status === "complete" || state.status === "failed") {
       lines.push(`Run is ${state.status}.${state.note ? ` ${state.note}` : ""}`);
+      if (state.status === "failed") lines.push("Fix the cause, then `valtay resume --retry`.");
       return lines;
     }
 

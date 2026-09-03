@@ -5,7 +5,10 @@ import { resolve, join } from "node:path";
 import { runStart } from "../commands/start.ts";
 import { createReplayAdapter, type ReplayAdapter } from "../hosts/replay.ts";
 import { registerAdapter } from "../hosts/index.ts";
-import { advance, gateArtifacts } from "./orchestrator.ts";
+import { git, worktreePath } from "../worktree.ts";
+import { pathExists } from "../detect.ts";
+import { readLedger } from "../ledger.ts";
+import { advance, gateArtifacts, retry } from "./orchestrator.ts";
 import { phase } from "./phases.ts";
 import {
   appendApproval,
@@ -72,6 +75,45 @@ const PLAN = JSON.stringify({
   alternatives_considered: [{ shape: "one layer per function", rejected: "fragmentation, no review gain" }],
 });
 
+const PROBE = JSON.stringify({
+  traces: [
+    {
+      unit: "RU-1",
+      source: "agent",
+      entry: "appendManifest",
+      nodes: [
+        {
+          id: "n1",
+          symbol: "appendManifest",
+          file: "src/run/store.ts",
+          line: 12,
+          status: "changed",
+          note: "appends rather than overwriting",
+          children: ["n2"],
+        },
+        {
+          id: "n2",
+          symbol: "appendJsonl",
+          file: "src/run/store.ts",
+          line: 40,
+          status: "new",
+          children: [],
+        },
+      ],
+    },
+  ],
+  deviations: [
+    {
+      kind: "signature",
+      detail: "appendJsonl needed the run dir, which the plan did not pass",
+      file: "src/run/store.ts",
+      severity: "local",
+      fix_lives_in: "plan.json",
+    },
+  ],
+  checkpoint_output: "bun test v1.3.11\n 24 pass\n 0 fail",
+});
+
 async function start(responses: Parameters<typeof createReplayAdapter>[1]): Promise<{
   run: Run;
   adapter: ReplayAdapter;
@@ -98,12 +140,23 @@ async function approve(run: Run, gate: "G1" | "G2" | "G3" | "G4" | "G6"): Promis
   });
 }
 
+/** A real repo, not a `.git` stub — the probe's worktree needs git to work. */
+async function initRepo(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  // Makes `shape.{ext}` resolve to TypeScript, as it does in the real repo.
+  await writeFile(resolve(dir, "package.json"), "{}");
+
+  await git(dir, ["init", "--quiet", "-b", "main"]);
+  await git(dir, ["config", "user.email", "test@example.com"]);
+  await git(dir, ["config", "user.name", "Test"]);
+  await git(dir, ["add", "-A"]);
+  await git(dir, ["commit", "--quiet", "-m", "init"]);
+}
+
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "valtay-orch-"));
   repo = resolve(root, "valtay");
-  await mkdir(resolve(repo, ".git"), { recursive: true });
-  // Makes `shape.{ext}` resolve to TypeScript, as it does in the real repo.
-  await writeFile(resolve(repo, "package.json"), "{}");
+  await initRepo(repo);
   process.env["VALTAY_HOME"] = resolve(root, "home");
   restore = () => {};
 });
@@ -170,18 +223,24 @@ describe("advance", () => {
     expect(await readArtifact(run, "shape.ts")).toContain("checkSpec");
   });
 
-  test("clears every gate in order and completes", async () => {
-    const { run } = await start([RESEARCH, DESIGN, SHAPE, PLAN]);
+  test("clears every gate in order, through the probe", async () => {
+    const { run } = await start([RESEARCH, DESIGN, SHAPE, PLAN, PROBE]);
 
-    for (const gate of ["G1", "G2", "G3"] as const) {
+    for (const gate of ["G1", "G2", "G3", "G4"] as const) {
       await advance(run);
       expect((await readState(run)).gate).toBe(gate);
       await approve(run, gate);
     }
 
-    // G4 and G6 belong to Probe and Build, which are not built yet.
-    await expect(advance(run)).rejects.toThrow(/No phase prompt for "probe"/);
-    expect((await readState(run)).completed).toEqual(["research", "reconcile", "shape", "plan"]);
+    // G6 belongs to Build, which is not built yet.
+    await expect(advance(run)).rejects.toThrow(/No phase prompt for "build"/);
+    expect((await readState(run)).completed).toEqual([
+      "research",
+      "reconcile",
+      "shape",
+      "plan",
+      "probe",
+    ]);
   });
 
   test("resuming does not re-run a phase whose artifact is already on disk", async () => {
@@ -232,6 +291,28 @@ describe("failure handling", () => {
 
     expect((await readState(run)).gate).toBe("G1");
     expect((await readManifest(run)).map((r) => r.exit_code)).toEqual([1, 0, 0]);
+  });
+
+  test("a halted run says how to pick it back up, and does not loop on its own", async () => {
+    const { run, adapter } = await start([{ error: "boom" }, { error: "boom" }, RESEARCH, DESIGN]);
+    await advance(run);
+    expect(adapter.calls).toHaveLength(2);
+
+    // A third blind attempt at something broken is waste, so advance refuses.
+    expect((await advance(run)).join("\n")).toContain("valtay resume --retry");
+    expect(adapter.calls).toHaveLength(2);
+
+    // Retrying is a deliberate act, taken after the cause is fixed.
+    await retry(run);
+    await advance(run);
+    expect(adapter.calls).toHaveLength(4);
+    expect((await readState(run)).gate).toBe("G1");
+  });
+
+  test("retry on a healthy run does nothing", async () => {
+    const { run } = await start([RESEARCH, DESIGN]);
+    await advance(run);
+    expect((await retry(run)).join("")).toContain("nothing to retry");
   });
 
   test("an empty artifact is a failure, not an empty file", async () => {
@@ -313,6 +394,126 @@ describe("JSON artifacts", () => {
     expect((await readState(run)).status).toBe("failed");
     expect(await readArtifact(run, "plan.json")).toBeNull();
     expect((await readManifest(run)).at(-1)!.notes.join(" ")).toContain("exceeds the run budget");
+  });
+});
+
+describe("the probe", () => {
+  /** Advances through G1-G3 so the next `advance` runs the probe. */
+  async function toProbe(responses: Array<string | { error: string }>): Promise<Run> {
+    const { run } = await start(responses);
+    for (const gate of ["G1", "G2", "G3"] as const) {
+      await advance(run);
+      await approve(run, gate);
+    }
+    return run;
+  }
+
+  test("works in a worktree and discards it, whatever the outcome", async () => {
+    const run = await toProbe([RESEARCH, DESIGN, SHAPE, PLAN, PROBE]);
+    const wt = worktreePath(run.meta.run, "probe");
+
+    await advance(run);
+
+    // The revert is the discard (design.md §10.1). What survives is the trace.
+    expect(await pathExists(wt)).toBe(false);
+    expect((await readState(run)).gate).toBe("G4");
+    expect(await readArtifact(run, "probe.json")).toContain("appendManifest");
+  });
+
+  test("hands the prober the worktree, not the repo", async () => {
+    const { run, adapter } = await start([RESEARCH, DESIGN, SHAPE, PLAN, PROBE]);
+    for (const gate of ["G1", "G2", "G3"] as const) {
+      await advance(run);
+      await approve(run, gate);
+    }
+    await advance(run);
+
+    const probeCall = adapter.calls.at(-1)!;
+    expect(probeCall.workdir).toBe(worktreePath(run.meta.run, "probe"));
+    expect(probeCall.write).toBe(true);
+
+    // Read-only phases never get one.
+    expect(adapter.calls[0]!.workdir).toBe(repo);
+    expect(adapter.calls[0]!.write).toBe(false);
+  });
+
+  test("discards the worktree even when the probe fails", async () => {
+    const run = await toProbe([RESEARCH, DESIGN, SHAPE, PLAN, { error: "boom" }, { error: "boom" }]);
+    await advance(run);
+
+    expect(await pathExists(worktreePath(run.meta.run, "probe"))).toBe(false);
+    expect((await readState(run)).status).toBe("failed");
+  });
+
+  test("appends its deviations to the project ledger", async () => {
+    const run = await toProbe([RESEARCH, DESIGN, SHAPE, PLAN, PROBE]);
+    await advance(run);
+
+    // Nothing reads the ledger yet. It is written from run one anyway, because
+    // promotion needs three recurrences and history cannot be backfilled.
+    const entries = await readLedger("project", repo);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "project",
+      run: "demo",
+      pattern: "signature",
+      severity: "local",
+    });
+  });
+
+  test("must show what the checkpoint actually printed", async () => {
+    // Observed live: the probe returned a trace in 66 seconds, which is not long
+    // enough to have implemented anything. A trace written from the plan rather than
+    // from a run is the paragraph the trace was meant to replace, wearing evidence's
+    // clothes — so the gate does not open without the oracle's own output.
+    const { checkpoint_output, ...unproven } = JSON.parse(PROBE);
+    const noEvidence = JSON.stringify(unproven);
+
+    const run = await toProbe([RESEARCH, DESIGN, SHAPE, PLAN, noEvidence, noEvidence]);
+    await advance(run);
+
+    expect((await readState(run)).status).toBe("failed");
+    expect((await readManifest(run)).at(-1)!.notes.join(" ")).toContain("no checkpoint_output");
+  });
+
+  test("JSON wrapped in prose is unwrapped rather than failed", async () => {
+    // Also observed live: told its status value was invalid, the phase answered the
+    // correction conversationally instead of re-emitting the artifact.
+    const chatty = `All done. Here is the result:\n\n${PROBE}\n\nLet me know if you need more.`;
+
+    const run = await toProbe([RESEARCH, DESIGN, SHAPE, PLAN, chatty]);
+    await advance(run);
+
+    expect((await readState(run)).gate).toBe("G4");
+    expect(JSON.parse((await readArtifact(run, "probe.json"))!).traces).toHaveLength(1);
+  });
+
+  test("a trace over the node budget is rejected, not stored", async () => {
+    const wide = JSON.stringify({
+      traces: [
+        {
+          unit: "RU-1",
+          source: "agent",
+          entry: "x",
+          nodes: Array.from({ length: 41 }, (_, i) => ({
+            id: `n${i}`,
+            symbol: `s${i}`,
+            file: "a.ts",
+            line: i + 1,
+            status: "new",
+            children: [],
+          })),
+        },
+      ],
+      deviations: [],
+      checkpoint_output: "24 pass",
+    });
+
+    const run = await toProbe([RESEARCH, DESIGN, SHAPE, PLAN, wide, wide]);
+    await advance(run);
+
+    expect((await readState(run)).status).toBe("failed");
+    expect((await readManifest(run)).at(-1)!.notes.join(" ")).toContain("exceeds the run budget of 40");
   });
 });
 

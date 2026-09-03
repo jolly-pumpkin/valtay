@@ -24,11 +24,16 @@ describe("claudeArgs", () => {
     expect(args.join(" ")).toContain("--disallowed-tools Edit Write NotebookEdit");
   });
 
-  test("a write phase gets a shell, because the worktree is the fence", () => {
+  test("a write phase gets a shell, via an allowlist rather than a blanket skip", () => {
     const args = claudeArgs(request({ write: true }));
 
-    expect(args.join(" ")).toContain("--permission-mode bypassPermissions");
+    // `bypassPermissions` maps to --dangerously-skip-permissions, which refuses to
+    // run as root and so fails outright in a container. This works everywhere and
+    // is a fence rather than the absence of one.
+    expect(args.join(" ")).toContain("--permission-mode acceptEdits");
+    expect(args.join(" ")).toContain("--allowed-tools Bash Read Write Edit");
     expect(args).not.toContain("--disallowed-tools");
+    expect(args).not.toContain("bypassPermissions");
   });
 
   test("the model and effort come from the binding", () => {

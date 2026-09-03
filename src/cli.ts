@@ -7,7 +7,8 @@ import { runStart, formatStartResult } from "./commands/start.ts";
 import { runStatusLines, selectRun } from "./commands/status.ts";
 import { runApprove, runReject } from "./commands/gate.ts";
 import { runShow } from "./commands/show.ts";
-import { advance } from "./run/orchestrator.ts";
+import { runTrace } from "./commands/trace.ts";
+import { advance, retry } from "./run/orchestrator.ts";
 
 const program = new Command()
   .name("valtay")
@@ -91,11 +92,27 @@ program
   .action((artifact, opts) => report(() => runShow({ artifact, ...opts })));
 
 program
-  .command("resume")
-  .description("Carry the run forward from wherever it stopped")
+  .command("trace")
+  .description("Render a unit's call path as path:line:col")
+  .argument("[unit]", "release unit, e.g. RU-1")
+  .option("--tree", "nested tree instead of the flat list")
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
-  .action((opts) => report(async () => advance(await selectRun(opts))));
+  .action((unit, opts) => report(() => runTrace({ unit, ...opts })));
+
+program
+  .command("resume")
+  .description("Carry the run forward from wherever it stopped")
+  .option("--retry", "re-attempt a phase that failed")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((opts) =>
+    report(async () => {
+      const run = await selectRun(opts);
+      const preamble = opts.retry ? await retry(run) : [];
+      return [...preamble, ...(await advance(run))];
+    })
+  );
 
 program
   .command("status")

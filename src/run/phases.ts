@@ -16,6 +16,12 @@ export interface PhaseDef {
   budget: number;
   /** Whether the phase gets a worktree and may write source. */
   write: boolean;
+  /**
+   * What happens to that worktree afterwards. `discard` is the probe's revert — it
+   * is what makes the probe a falsifier rather than a draft, and it is why probe
+   * re-entry costs one probe rather than a rollback.
+   */
+  worktree?: "discard" | "keep";
   /** The gate that follows, if any. */
   gate?: GateId;
   /**
@@ -93,10 +99,14 @@ export const PHASES: readonly PhaseDef[] = [
     n: "5",
     title: "Probe",
     role: "prober",
-    output: "probe.md",
-    format: "markdown",
+    // One structured document rather than design.md §8's `probe.md` plus
+    // `trace/*.json`: the phase writes nothing itself, so the orchestrator stays the
+    // only thing that owns an artifact path. `valtay trace` renders it.
+    output: "probe.json",
+    format: "json",
     budget: 40,
     write: true,
+    worktree: "discard",
     gate: "G4",
     summary: "implement, trace, revert — the code is discarded, the trace is kept",
   },
@@ -109,6 +119,7 @@ export const PHASES: readonly PhaseDef[] = [
     format: "markdown",
     budget: 35,
     write: true,
+    worktree: "keep",
     gate: "G6",
     summary: "working code, per review layer",
   },

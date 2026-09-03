@@ -2,7 +2,11 @@ import { adapterFor } from "../hosts/index.ts";
 import type { HostRequest } from "../hosts/types.ts";
 import { loadPrompt } from "../prompts.ts";
 import { researchInput, sha256, section, type Runspec } from "../runspec.ts";
+import type { ResolvedConfig } from "../config.ts";
 import { validatePlan } from "../plan.ts";
+import { recordDeviations } from "../ledger.ts";
+import { validateTrace, withLayers, type ProbeResult } from "../trace.ts";
+import { createWorktree, removeWorktree, worktreePath } from "../worktree.ts";
 import { outputPath, phase, phaseForArtifact, type PhaseDef } from "./phases.ts";
 import {
   appendManifest,
@@ -101,6 +105,36 @@ export function trimPreamble(output: string, leading?: string): string {
   return index === -1 ? output : output.slice(index + 1);
 }
 
+/**
+ * The outermost JSON object in `output`, or `output` unchanged.
+ *
+ * The JSON counterpart of `trimPreamble`, and needed for the same reason: a phase
+ * asked for a bare object will sometimes wrap it in a sentence. Scans for a balanced
+ * pair rather than taking the last `}`, so a trailing remark after the object does
+ * not drag unparseable text back in. String contents are skipped, since a brace
+ * inside a `detail` field would otherwise unbalance the count.
+ */
+export function extractJson(output: string): string {
+  const start = output.indexOf("{");
+  if (start === -1) return output;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < output.length; i++) {
+    const char = output[i]!;
+
+    if (escaped) escaped = false;
+    else if (char === "\\") escaped = true;
+    else if (char === '"') inString = !inString;
+    else if (!inString && char === "{") depth++;
+    else if (!inString && char === "}" && --depth === 0) return output.slice(start, i + 1);
+  }
+
+  return output;
+}
+
 export interface Validation {
   /** Why the artifact is unusable. Fed back to the phase on the retry. */
   error?: string;
@@ -128,7 +162,7 @@ function validate(run: Run, def: PhaseDef, output: string): Validation {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(output);
+    parsed = JSON.parse(extractJson(output));
   } catch (err) {
     return { error: `the output is not valid JSON: ${err instanceof Error ? err.message : String(err)}` };
   }
@@ -138,7 +172,37 @@ function validate(run: Run, def: PhaseDef, output: string): Validation {
     if (problems.length > 0) return { error: problems.join("; ") };
   }
 
+  if (def.id === "probe") {
+    const problems = probeProblems(parsed, run.meta.config);
+    if (problems.length > 0) return { error: problems.join("; ") };
+    parsed = withProbeLayers(parsed as ProbeResult, run.meta.config.layers);
+  }
+
   return { normalized: JSON.stringify(parsed, null, 2) };
+}
+
+function probeProblems(parsed: unknown, config: ResolvedConfig): string[] {
+  const result = parsed as ProbeResult;
+  if (!Array.isArray(result?.traces) || result.traces.length === 0) {
+    return ["the probe returned no traces — G4 has nothing to approve"];
+  }
+
+  const problems = result.traces.flatMap((trace, i) =>
+    validateTrace(trace, config).map((problem) => `traces[${i}]: ${problem}`)
+  );
+
+  // Evidence, not assertion: without the checkpoint's own output there is nothing
+  // separating a traced execution from a plausible guess about one.
+  if (!result.checkpoint_output?.trim()) {
+    problems.push("no checkpoint_output — paste what the unit's checkpoint command actually printed");
+  }
+
+  return problems;
+}
+
+/** Fills each node's layer from the config map, so the renderer can column it. */
+function withProbeLayers(result: ProbeResult, layers: Record<string, string>): ProbeResult {
+  return { ...result, traces: result.traces.map((trace) => withLayers(trace, layers)) };
 }
 
 /**
@@ -177,12 +241,20 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
 
   const payload = renderPayload(inputs) + (await reviewerCorrection(run, def));
 
+  // A write phase works in a worktree and nowhere else — that is the fence, and it
+  // is why a write phase can be given a shell without risking the checkout you are
+  // sitting in.
+  const workdir = def.write ? worktreePath(run.meta.run, def.id) : run.meta.repo;
+  if (def.write) {
+    await createWorktree(run.meta.repo, workdir, `valtay/${run.meta.run}/${def.id}`);
+  }
+
   const base: HostRequest = {
     binding,
     host,
     prompt,
     input: payload,
-    workdir: run.meta.repo,
+    workdir,
     readDirs: [run.dir],
     write: def.write,
     timeout_ms: binding.timeout_ms,
@@ -191,44 +263,71 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
   let correction = "";
   let lastError = "unknown failure";
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const request = correction ? { ...base, input: `${base.input}\n${correction}` } : base;
-    const result = await adapterFor(host.adapter).run(request);
-    const artifact = trimPreamble(result.output.trim(), def.leading);
+  try {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const request = correction ? { ...base, input: `${base.input}\n${correction}` } : base;
+      const result = await adapterFor(host.adapter).run(request);
+      const artifact = trimPreamble(result.output.trim(), def.leading);
 
-    const checked = result.exit_code === 0 ? validate(run, def, artifact) : {};
-    const failure = result.error ?? checked.error;
-    const ref = failure
-      ? undefined
-      : await writeArtifact(run, output, `${checked.normalized ?? artifact}\n`);
+      const checked = result.exit_code === 0 ? validate(run, def, artifact) : {};
+      const failure = result.error ?? checked.error;
+      const stored = checked.normalized ?? artifact;
+      const ref = failure ? undefined : await writeArtifact(run, output, `${stored}\n`);
 
-    const record: ManifestRecord = {
-      ts: new Date().toISOString(),
-      phase: def.id,
-      role: def.role,
-      host: binding.host,
-      model: binding.model,
-      ...(binding.effort ? { effort: binding.effort } : {}),
-      prompt_sha: sha256(prompt),
-      inputs: inputs.flatMap((i) => (i.ref ? [i.ref] : [])),
-      outputs: ref ? [ref] : [],
-      duration_s: Math.round(result.duration_s * 10) / 10,
-      exit_code: result.exit_code,
-      attempt,
-      ...(result.usage ? { usage: result.usage } : {}),
-      ...(result.cost_usd === undefined ? {} : { cost_usd: result.cost_usd }),
-      ...(result.permission_denials ? { permission_denials: result.permission_denials } : {}),
-      notes: failure ? [failure] : [],
-    };
-    await appendManifest(run, record);
+      const record: ManifestRecord = {
+        ts: new Date().toISOString(),
+        phase: def.id,
+        role: def.role,
+        host: binding.host,
+        model: binding.model,
+        ...(binding.effort ? { effort: binding.effort } : {}),
+        prompt_sha: sha256(prompt),
+        inputs: inputs.flatMap((i) => (i.ref ? [i.ref] : [])),
+        outputs: ref ? [ref] : [],
+        duration_s: Math.round(result.duration_s * 10) / 10,
+        exit_code: result.exit_code,
+        attempt,
+        ...(result.usage ? { usage: result.usage } : {}),
+        ...(result.cost_usd === undefined ? {} : { cost_usd: result.cost_usd }),
+        ...(result.permission_denials ? { permission_denials: result.permission_denials } : {}),
+        notes: failure ? [failure] : [],
+      };
+      await appendManifest(run, record);
 
-    if (!failure) return { ok: true, output: ref, attempts: attempt };
+      if (!failure) {
+        if (def.id === "probe") await recordProbeDeviations(run, stored);
+        return { ok: true, output: ref, attempts: attempt };
+      }
 
-    lastError = failure;
-    correction = checked.error
-      ? `# Correction\n\nYour previous attempt was rejected: ${checked.error}. Emit only the artifact.\n`
-      : "";
+      lastError = failure;
+      // Stated this bluntly because a politer version got answered conversationally:
+      // the phase explained itself in prose instead of re-emitting the artifact.
+      correction = checked.error
+        ? `# Correction\n\nYour previous output was rejected: ${checked.error}\n\n` +
+          "Send the corrected artifact again. Your entire reply must be the artifact " +
+          "itself — no explanation, no apology, no commentary before or after it.\n"
+        : "";
+    }
+
+    return { ok: false, error: lastError, attempts: 2 };
+  } finally {
+    // In a `finally` on purpose: a probe that failed still leaves a worktree, and a
+    // worktree that outlives its phase is a fence nobody is behind.
+    if (def.write && def.worktree === "discard") {
+      await removeWorktree(run.meta.repo, workdir);
+    }
   }
+}
 
-  return { ok: false, error: lastError, attempts: 2 };
+/**
+ * Appends the probe's deviations to the project ledger.
+ *
+ * Nothing consumes the ledger yet. It is written from the first run because the
+ * promotion rule needs three recurrences to fire, and a history that was never
+ * recorded cannot be backfilled.
+ */
+async function recordProbeDeviations(run: Run, stored: string): Promise<void> {
+  const result = JSON.parse(stored) as ProbeResult;
+  const fromTraces = result.traces.flatMap((trace) => trace.deviations ?? []);
+  await recordDeviations(run.meta.repo, run.meta.run, [...(result.deviations ?? []), ...fromTraces]);
 }

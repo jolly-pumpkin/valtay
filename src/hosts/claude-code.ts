@@ -20,6 +20,17 @@ interface ClaudeResult {
 const READ_ONLY_DENY = "Edit Write NotebookEdit";
 
 /**
+ * What a write phase is allowed, as an allowlist rather than a blanket skip.
+ *
+ * `bypassPermissions` looked like the obvious choice and is not usable: it maps to
+ * `--dangerously-skip-permissions`, which refuses to run as root and so fails
+ * outright in a container. `acceptEdits` plus an explicit list works everywhere,
+ * grants Bash for the project's own checkpoint, and is a fence rather than the
+ * absence of one.
+ */
+const WRITE_ALLOW = "Bash Read Write Edit NotebookEdit Glob Grep";
+
+/**
  * Builds the argv for one invocation.
  *
  * The prompt is **not** an argument. `--disallowed-tools` and `--add-dir` are
@@ -37,9 +48,9 @@ export function claudeArgs(request: HostRequest): string[] {
   args.push("--append-system-prompt", request.prompt);
 
   if (write) {
-    // Probe and Build run inside a throwaway worktree and need Bash for the
-    // project's own oracle, so the worktree is the fence rather than the tool list.
-    args.push("--permission-mode", "bypassPermissions");
+    // Probe and Build run inside a worktree and need Bash for the project's own
+    // checkpoint. The worktree is the outer fence; the allowlist is the inner one.
+    args.push("--permission-mode", "acceptEdits", "--allowed-tools", WRITE_ALLOW);
   } else {
     args.push("--permission-mode", "dontAsk", "--disallowed-tools", READ_ONLY_DENY);
   }
