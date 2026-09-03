@@ -97,7 +97,7 @@ can be reimplemented per editor without touching pipeline logic.
 ```
 repo/
   valtay.toml            ~20 lines — host binaries, default bindings, layer map
-  .gitignore             + .valtay/
+  .valtay/.gitignore     blank — holds the folder in git, yours to fill in
   ledger-project.jsonl   optional but recommended — durable project knowledge
 ```
 
@@ -123,8 +123,13 @@ inside. See `RUNSPEC.md`.
 The only genuine argument for committing anything beyond `valtay.toml` is
 `ledger-project.jsonl`: it accumulates how *this codebase* resists change, which is
 knowledge belonging to the repo rather than to one laptop. Everything else is run
-scaffolding. Adopting Valtay costs one config file and a gitignore line; abandoning
+scaffolding. Adopting Valtay costs one config file and one empty folder; abandoning
 it costs nothing.
+
+`init` never edits your root `.gitignore` — it drops a blank `.gitignore` inside
+`.valtay/` instead. That keeps the command self-contained, works the same in a
+directory that merely *holds* repos, and leaves you the one place to ignore run
+artifacts if you decide to.
 
 ---
 
@@ -1043,7 +1048,7 @@ another machine" are the same operation.
 ## 19. CLI
 
 ```
-valtay init                       # writes valtay.toml + gitignore line
+valtay init                       # writes valtay.toml + .valtay/ (repo or workspace)
 valtay new <name> --repo . --tickets LIN-483,LIN-484
                                   # scaffolds runspec.md, no model call
 valtay check runspec.md           # advisory lint, cross-vendor

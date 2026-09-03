@@ -2,11 +2,29 @@
 
 import { Command } from "commander";
 import { runNew } from "./commands/new.ts";
+import { runInit, formatInitResult } from "./commands/init.ts";
 
 const program = new Command()
   .name("valtay")
   .description("Land multiple tickets as safe, reviewable PRs from one run")
   .version("0.0.1");
+
+program
+  .command("init")
+  .description("Write valtay.toml and .valtay/ into a repo or a directory of repos")
+  .option("--path <path>", "target directory", ".")
+  .option("--force", "overwrite an existing valtay.toml")
+  .option("--workspace", "treat the target as a directory of repos")
+  .option("--repo", "treat the target as a repo root")
+  .action(async (opts) => {
+    try {
+      const result = await runInit(opts);
+      for (const line of formatInitResult(result)) console.log(line);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
 
 program
   .command("new")
@@ -25,4 +43,4 @@ program
     runNew(args);
   });
 
-program.parse();
+await program.parseAsync();

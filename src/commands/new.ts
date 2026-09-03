@@ -1,5 +1,6 @@
 import { resolve, basename } from "path";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
+import { detectSkills } from "../detect.ts";
 
 interface NewArgs {
   name: string;
@@ -35,14 +36,6 @@ function parseArgs(args: string[]): NewArgs | null {
   }
 
   return { name, repo: resolve(repo), tickets, mode, commit };
-}
-
-function detectSkills(repoPath: string): string[] {
-  const detected: string[] = [];
-  if (existsSync(resolve(repoPath, ".claude"))) detected.push(".claude/");
-  if (existsSync(resolve(repoPath, "codex.json"))) detected.push("codex.json");
-  if (existsSync(resolve(repoPath, ".codex"))) detected.push(".codex/");
-  return detected;
 }
 
 interface TomlDefaults {
