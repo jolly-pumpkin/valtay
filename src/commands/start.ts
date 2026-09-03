@@ -40,7 +40,7 @@ async function resolveRepoRoot(spec: Runspec, override?: string): Promise<string
   const declared = override ?? spec.frontmatter["repo"];
   const start = typeof declared === "string" && declared.trim()
     ? resolve(declared.replace(/^~(?=\/|$)/, process.env["HOME"] ?? "~"))
-    : dirname(resolve(spec.path));
+    : process.cwd();
 
   const root = await findRepoRoot(start);
   if (!root) throw new Error(`No git repository at or above ${start}`);

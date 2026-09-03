@@ -47,7 +47,7 @@ describe("preflight", () => {
       )
     );
 
-    await expect(runStart({ spec: path })).rejects.toThrow(/unresolved conflict/i);
+    await expect(runStart({ spec: path, repo })).rejects.toThrow(/unresolved conflict/i);
   });
 
   test("a resolved conflict does not", async () => {
@@ -58,25 +58,25 @@ describe("preflight", () => {
       )
     );
 
-    expect((await runStart({ spec: path })).meta.run).toBe("demo");
+    expect((await runStart({ spec: path, repo })).meta.run).toBe("demo");
   });
 
   test("a spec with no assumptions section blocks", async () => {
     const path = await writeSpec(spec("## Intent\n\nDo the thing.\n"));
-    await expect(runStart({ spec: path })).rejects.toThrow(/Assumptions to verify/i);
+    await expect(runStart({ spec: path, repo })).rejects.toThrow(/Assumptions to verify/i);
   });
 
   test("a spec outside any repo blocks", async () => {
     const loose = resolve(root, "loose.md");
     await writeFile(loose, COMPLETE);
-    await expect(runStart({ spec: loose })).rejects.toThrow(/No git repository/);
+    await expect(runStart({ spec: loose, repo: root })).rejects.toThrow(/No git repository/);
   });
 });
 
 describe("start", () => {
   test("freezes the spec and reports the binding", async () => {
     const path = await writeSpec(COMPLETE);
-    const run = await runStart({ spec: path });
+    const run = await runStart({ spec: path, repo });
 
     expect(run.meta.repo).toBe(repo);
     expect(run.meta.runspec.sha).toBe(sha256(COMPLETE));
@@ -90,7 +90,7 @@ describe("start", () => {
 
   test("--run overrides the spec's own name", async () => {
     const path = await writeSpec(COMPLETE);
-    const run = await runStart({ spec: path, run: "other" });
+    const run = await runStart({ spec: path, repo, run: "other" });
 
     expect(run.meta.run).toBe("other");
     expect((await findRun(repo, "other")).dir).toBe(run.dir);
@@ -99,7 +99,7 @@ describe("start", () => {
 
 describe("status", () => {
   test("lists every phase and marks the current one", async () => {
-    await runStart({ spec: await writeSpec(COMPLETE) });
+    await runStart({ spec: await writeSpec(COMPLETE), repo });
     const lines = await runStatusLines({ repo });
     const text = lines.join("\n");
 
@@ -116,7 +116,7 @@ describe("status", () => {
   });
 
   test("shows a voided approval rather than hiding it", async () => {
-    await runStart({ spec: await writeSpec(COMPLETE) });
+    await runStart({ spec: await writeSpec(COMPLETE), repo });
     const run = await findRun(repo);
 
     const ref = await writeArtifact(run, "design.md", "v1");
@@ -133,7 +133,7 @@ describe("status", () => {
   });
 
   test("warns when the frozen spec copy has been edited", async () => {
-    await runStart({ spec: await writeSpec(COMPLETE) });
+    await runStart({ spec: await writeSpec(COMPLETE), repo });
     const run = await findRun(repo);
 
     await writeArtifact(run, "runspec.md", `${COMPLETE}\nextra\n`);

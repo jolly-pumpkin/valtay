@@ -10,8 +10,6 @@ export interface InitOptions {
   force?: boolean;
   /** Force workspace mode even if the target sits inside a repo. */
   workspace?: boolean;
-  /** Force repo mode, treating the target as a repo root if no .git is found. */
-  repo?: boolean;
   /** Install the valtay-compose skill even without a .claude/ directory. */
   skill?: boolean;
 }
@@ -167,17 +165,13 @@ async function installSkill(
 }
 
 export async function runInit(options: InitOptions = {}): Promise<InitResult> {
-  if (options.repo && options.workspace) {
-    throw new Error("--repo and --workspace are mutually exclusive");
-  }
-
   const target = resolve(options.path ?? ".");
   if (!(await pathExists(target))) {
     throw new Error(`No such directory: ${target}`);
   }
 
   const repoRoot = options.workspace ? null : await findRepoRoot(target);
-  const mode: Mode = repoRoot || options.repo ? "repo" : "workspace";
+  const mode: Mode = repoRoot ? "repo" : "workspace";
   const root = repoRoot ?? target;
 
   const repos = mode === "workspace" ? await findChildRepos(root) : [];

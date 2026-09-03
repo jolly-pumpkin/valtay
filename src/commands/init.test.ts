@@ -131,24 +131,6 @@ test("--workspace overrides detection for a repo that also holds repos", async (
   expect(result.repos).toEqual(["pkg-a"]);
 });
 
-test("--repo treats a directory without .git as a repo root", async () => {
-  const dir = resolve(root, "plain");
-  await mkdir(dir, { recursive: true });
-
-  const result = await runInit({ path: dir, repo: true });
-
-  expect(result.mode).toBe("repo");
-  expect(result.root).toBe(dir);
-  expect(await readFile(resolve(dir, "valtay.toml"), "utf-8")).toContain("[trace]");
-});
-
-test("--repo and --workspace together are rejected", async () => {
-  const repo = await makeRepo("repo");
-  expect(runInit({ path: repo, repo: true, workspace: true })).rejects.toThrow(
-    "mutually exclusive"
-  );
-});
-
 test("a missing target directory is rejected", async () => {
   expect(runInit({ path: resolve(root, "nope") })).rejects.toThrow("No such directory");
 });

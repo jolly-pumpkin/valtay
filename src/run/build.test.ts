@@ -93,7 +93,7 @@ async function readyRun(): Promise<Run> {
   const path = resolve(repo, "runspec.md");
   await writeFile(path, SPEC);
 
-  const run = await runStart({ spec: path });
+  const run = await runStart({ spec: path, repo });
   await writeArtifact(run, "plan.json", JSON.stringify(PLAN));
   await writeArtifact(run, "probe.json", JSON.stringify(PROBE));
   await writeArtifact(run, "shape.ts", "export function greet(): string;");

@@ -32,7 +32,6 @@ program
   .option("--path <path>", "target directory", ".")
   .option("--force", "overwrite an existing valtay.toml")
   .option("--workspace", "treat the target as a directory of repos")
-  .option("--repo", "treat the target as a repo root")
   .option("--skill", "install the valtay-compose skill even without a .claude/ directory")
   .action((opts) => report(async () => formatInitResult(await runInit(opts))));
 
@@ -40,16 +39,12 @@ program
   .command("new")
   .description("Scaffold a run spec (no model call)")
   .argument("<name>", "run name")
-  .option("--repo <path>", "repository path", ".")
   .option("--tickets <ids>", "comma-separated ticket IDs")
   .option("--mode <mode>", "attended or unattended", "attended")
-  .option("--commit", "place runspec.md in the repo instead of ~/.valtay/")
   .action((name, opts) => {
     const args: string[] = [name];
-    if (opts.repo) args.push("--repo", opts.repo);
     if (opts.tickets) args.push("--tickets", opts.tickets);
     if (opts.mode) args.push("--mode", opts.mode);
-    if (opts.commit) args.push("--commit");
     runNew(args);
   });
 

@@ -125,7 +125,7 @@ async function start(responses: Parameters<typeof createReplayAdapter>[1]): Prom
 
   const path = resolve(repo, "runspec.md");
   await writeFile(path, SPEC);
-  return { run: await runStart({ spec: path }), adapter };
+  return { run: await runStart({ spec: path, repo }), adapter };
 }
 
 /** Records the standing approval a gate needs, over everything it covers. */
