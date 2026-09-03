@@ -2,7 +2,8 @@ import { adapterFor } from "../hosts/index.ts";
 import type { HostRequest } from "../hosts/types.ts";
 import { loadPrompt } from "../prompts.ts";
 import { researchInput, sha256, section, type Runspec } from "../runspec.ts";
-import type { ResolvedConfig } from "../config.ts";
+import type { ResolvedConfig, RoleBinding } from "../config.ts";
+import type { HostResult } from "../hosts/types.ts";
 import { validatePlan } from "../plan.ts";
 import { recordDeviations } from "../ledger.ts";
 import { validateTrace, withLayers, type ProbeResult } from "../trace.ts";
@@ -31,6 +32,47 @@ export interface PhaseOutcome {
   output?: ArtifactRef;
   error?: string;
   attempts: number;
+}
+
+export interface InvocationRecord {
+  def: PhaseDef;
+  binding: RoleBinding;
+  promptSha: string;
+  inputs: ArtifactRef[];
+  outputs: ArtifactRef[];
+  result: HostResult;
+  attempt: number;
+  notes: string[];
+}
+
+/**
+ * Builds the manifest record for one invocation.
+ *
+ * Shared because Build invokes once per review layer rather than once per phase, and
+ * invariant 7 wants every one of those in the manifest on the same terms — same
+ * fields, same treatment of failures, same cost attribution.
+ */
+export function manifestRecord(record: InvocationRecord): ManifestRecord {
+  const { def, binding, result } = record;
+
+  return {
+    ts: new Date().toISOString(),
+    phase: def.id,
+    role: def.role,
+    host: binding.host,
+    model: binding.model,
+    ...(binding.effort ? { effort: binding.effort } : {}),
+    prompt_sha: record.promptSha,
+    inputs: record.inputs,
+    outputs: record.outputs,
+    duration_s: Math.round(result.duration_s * 10) / 10,
+    exit_code: result.exit_code,
+    attempt: record.attempt,
+    ...(result.usage ? { usage: result.usage } : {}),
+    ...(result.cost_usd === undefined ? {} : { cost_usd: result.cost_usd }),
+    ...(result.permission_denials ? { permission_denials: result.permission_denials } : {}),
+    notes: record.notes,
+  };
 }
 
 /** Reads one of the run's artifacts as a phase input, hashed for the manifest. */
@@ -80,11 +122,10 @@ export async function inputsFor(run: Run, spec: Runspec, def: PhaseDef): Promise
       return [await artifactInput(run, "plan.json", "The approved plan"), await shape()];
 
     case "build":
-      return [
-        await artifactInput(run, "plan.json", "The approved plan"),
-        await shape(),
-        await artifactInput(run, "probe.md", "What the probe discovered"),
-      ];
+      // Build invokes once per review layer, so it assembles a payload per layer in
+      // `build.ts` rather than one for the phase. Reaching here means the
+      // orchestrator stopped routing it there.
+      throw new Error("Build assembles its own per-layer inputs — call runBuild");
   }
 }
 
@@ -274,25 +315,19 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
       const stored = checked.normalized ?? artifact;
       const ref = failure ? undefined : await writeArtifact(run, output, `${stored}\n`);
 
-      const record: ManifestRecord = {
-        ts: new Date().toISOString(),
-        phase: def.id,
-        role: def.role,
-        host: binding.host,
-        model: binding.model,
-        ...(binding.effort ? { effort: binding.effort } : {}),
-        prompt_sha: sha256(prompt),
-        inputs: inputs.flatMap((i) => (i.ref ? [i.ref] : [])),
-        outputs: ref ? [ref] : [],
-        duration_s: Math.round(result.duration_s * 10) / 10,
-        exit_code: result.exit_code,
-        attempt,
-        ...(result.usage ? { usage: result.usage } : {}),
-        ...(result.cost_usd === undefined ? {} : { cost_usd: result.cost_usd }),
-        ...(result.permission_denials ? { permission_denials: result.permission_denials } : {}),
-        notes: failure ? [failure] : [],
-      };
-      await appendManifest(run, record);
+      await appendManifest(
+        run,
+        manifestRecord({
+          def,
+          binding,
+          promptSha: sha256(prompt),
+          inputs: inputs.flatMap((i) => (i.ref ? [i.ref] : [])),
+          outputs: ref ? [ref] : [],
+          result,
+          attempt,
+          notes: failure ? [failure] : [],
+        })
+      );
 
       if (!failure) {
         if (def.id === "probe") await recordProbeDeviations(run, stored);

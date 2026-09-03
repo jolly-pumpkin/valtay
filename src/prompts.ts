@@ -6,6 +6,7 @@ import reconcilePrompt from "../assets/phases/reconcile.md" with { type: "file" 
 import shapePrompt from "../assets/phases/shape.md" with { type: "file" };
 import planPrompt from "../assets/phases/plan.md" with { type: "file" };
 import probePrompt from "../assets/phases/probe.md" with { type: "file" };
+import buildPrompt from "../assets/phases/build.md" with { type: "file" };
 
 /**
  * Phase prompts, shipped as assets.
@@ -24,6 +25,7 @@ const SHIPPED: Partial<Record<PhaseId, string>> = {
   shape: shapePrompt,
   plan: planPrompt,
   probe: probePrompt,
+  build: buildPrompt,
 };
 
 /** Where a project-local override of a phase prompt lives. */

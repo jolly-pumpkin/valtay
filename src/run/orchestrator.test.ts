@@ -114,6 +114,8 @@ const PROBE = JSON.stringify({
   checkpoint_output: "bun test v1.3.11\n 24 pass\n 0 fail",
 });
 
+const BUILD = "- Added appendJsonl and switched appendManifest to it.";
+
 async function start(responses: Parameters<typeof createReplayAdapter>[1]): Promise<{
   run: Run;
   adapter: ReplayAdapter;
@@ -223,23 +225,24 @@ describe("advance", () => {
     expect(await readArtifact(run, "shape.ts")).toContain("checkSpec");
   });
 
-  test("clears every gate in order, through the probe", async () => {
-    const { run } = await start([RESEARCH, DESIGN, SHAPE, PLAN, PROBE]);
+  test("clears every gate in order and completes", async () => {
+    const { run } = await start([RESEARCH, DESIGN, SHAPE, PLAN, PROBE, BUILD]);
 
-    for (const gate of ["G1", "G2", "G3", "G4"] as const) {
+    for (const gate of ["G1", "G2", "G3", "G4", "G6"] as const) {
       await advance(run);
       expect((await readState(run)).gate).toBe(gate);
       await approve(run, gate);
     }
 
-    // G6 belongs to Build, which is not built yet.
-    await expect(advance(run)).rejects.toThrow(/No phase prompt for "build"/);
+    expect((await advance(run)).join("\n")).toContain("Run complete.");
+    expect(await readState(run)).toMatchObject({ status: "complete" });
     expect((await readState(run)).completed).toEqual([
       "research",
       "reconcile",
       "shape",
       "plan",
       "probe",
+      "build",
     ]);
   });
 

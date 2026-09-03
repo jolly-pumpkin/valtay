@@ -1,4 +1,5 @@
 import { readRunspec, type Runspec } from "../runspec.ts";
+import { runBuild } from "./build.ts";
 import { runPhase } from "./invoke.ts";
 import { PHASES, nextPhase, outputPath, phase, type PhaseDef } from "./phases.ts";
 import {
@@ -83,7 +84,10 @@ export async function advance(run: Run, spec?: Runspec): Promise<string[]> {
 
     if (!produced || state.rerun) {
       lines.push(`${def.n} ${def.title} — ${def.summary}`);
-      const outcome = await runPhase(run, runspec, def);
+      // Build is the one phase that invokes more than once: a worker per review
+      // layer, because the layer boundary is what the reviewer approved at G3.
+      const outcome =
+        def.id === "build" ? await runBuild(run, runspec) : await runPhase(run, runspec, def);
 
       if (!outcome.ok) {
         await writeState(run, {
