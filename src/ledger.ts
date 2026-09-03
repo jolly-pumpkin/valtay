@@ -26,7 +26,7 @@ export interface LedgerEntry {
  */
 export function ledgerPath(kind: LedgerKind, repoRoot: string): string {
   return kind === "project"
-    ? resolve(repoRoot, "ledger-project.jsonl")
+    ? resolve(repoRoot, ".valtay", "ledger-project.jsonl")
     : resolve(valtayHome(), "ledger-harness.jsonl");
 }
 
