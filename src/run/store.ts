@@ -24,6 +24,12 @@ export interface RunState {
   completed: PhaseId[];
   updated: string;
   note?: string;
+  /**
+   * Re-run `phase` even though its artifact exists. Set by a typed rejection, which
+   * is the difference between resuming an interrupted run (keep what is on disk) and
+   * re-entering a phase whose output was wrong (produce it again).
+   */
+  rerun?: boolean;
 }
 
 export interface ArtifactRef {

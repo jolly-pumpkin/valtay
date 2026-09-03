@@ -4,7 +4,8 @@ import { Command } from "commander";
 import { runNew } from "./commands/new.ts";
 import { runInit, formatInitResult } from "./commands/init.ts";
 import { runStart, formatStartResult } from "./commands/start.ts";
-import { runStatusLines } from "./commands/status.ts";
+import { runStatusLines, selectRun } from "./commands/status.ts";
+import { advance } from "./run/orchestrator.ts";
 
 const program = new Command()
   .name("valtay")
@@ -55,8 +56,18 @@ program
   .option("--run <name>", "run name (defaults to the spec's run: key)")
   .option("--repo <path>", "repo root (defaults to the spec's repo: key)")
   .action((spec, opts) =>
-    report(async () => formatStartResult(await runStart({ spec, ...opts })))
+    report(async () => {
+      const run = await runStart({ spec, ...opts });
+      return [...formatStartResult(run), "", ...(await advance(run))];
+    })
   );
+
+program
+  .command("resume")
+  .description("Carry the run forward from wherever it stopped")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((opts) => report(async () => advance(await selectRun(opts))));
 
 program
   .command("status")

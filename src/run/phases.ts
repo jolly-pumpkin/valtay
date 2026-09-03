@@ -18,6 +18,17 @@ export interface PhaseDef {
   write: boolean;
   /** The gate that follows, if any. */
   gate?: GateId;
+  /**
+   * The heading the artifact must open with.
+   *
+   * Phase prompts ask for the bare artifact and models mostly comply, but a working
+   * note ahead of it ("Confirmed X. Now writing findings.") is common enough to be
+   * worth catching mechanically rather than asking harder. Anything before this
+   * heading is dropped; an artifact missing it entirely fails validation and the
+   * phase retries with the reason attached (design.md §15, moving a rule down the
+   * enforcement ladder from Advisory to Mechanical).
+   */
+  leading?: string;
   summary: string;
 }
 
@@ -37,6 +48,7 @@ export const PHASES: readonly PhaseDef[] = [
     format: "markdown",
     budget: 25,
     write: false,
+    leading: "## Findings",
     summary: "facts about the codebase, from the assumptions section alone",
   },
   {
@@ -49,6 +61,7 @@ export const PHASES: readonly PhaseDef[] = [
     budget: 30,
     write: false,
     gate: "G1",
+    leading: "## End state",
     summary: "the delta between the design and what the code actually does",
   },
   {
