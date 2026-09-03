@@ -11,7 +11,7 @@ Diagram: *Valtay — Pipeline, Gates and Correction Loops* (Lucidchart).
 
 | | |
 |---|---|
-| **Status** | Theory. No implementation. |
+| **Status** | Partly built. The spine runs end to end; see `IMPLEMENTED.md`. |
 | **Version** | 1.0 |
 | **Owner** | Collin |
 | **Goal** | Land multiple tickets as multiple safe, reviewable PRs from one run. |
@@ -234,18 +234,47 @@ degrade explicitly:
 
 ### 7.2 Invocation
 
-**claude-code**
+**claude-code** — verified against the binary; `src/hosts/claude-code.ts` builds this.
 
 ```bash
-claude -p --model opus --output-format json \
-  --append-system-prompt-file ~/.valtay/phases/designer.md \
-  --add-dir "$WT" \
-  --disallowed-tools "Edit,Write,NotebookEdit" \
-  "$(cat "$IN")"
+# read-only phase (1-4)
+printf '%s' "$PAYLOAD" | claude -p --output-format json --model opus --effort high \
+  --append-system-prompt "$(cat ~/.valtay/phases/designer.md)" \
+  --permission-mode dontAsk --disallowed-tools "Edit Write NotebookEdit" \
+  --add-dir "$RUNDIR"
+
+# write phase (5, 7), inside the worktree
+printf '%s' "$PAYLOAD" | claude -p --output-format json --model luna \
+  --append-system-prompt "$(cat ~/.valtay/phases/builder.md)" \
+  --permission-mode acceptEdits --allowed-tools "Bash Read Write Edit NotebookEdit Glob Grep"
 ```
 
 Append rather than replace the system prompt — replacing it breaks the host's own
 tool guidance.
+
+Four things the spike settled, each of which changed the code:
+
+- **The payload goes on stdin, never as an argument.** `--disallowed-tools
+  <tools...>` and `--add-dir <directories...>` are variadic and swallow a trailing
+  positional prompt; the CLI then fails with "Input must be provided either through
+  stdin or as a prompt argument". Stdin sidesteps it and lifts the argv length
+  ceiling, which matters once a phase's inputs are several artifacts long.
+- **`dontAsk` plus the write tools denied is a real read-only fence.** Read, Grep and
+  Glob work; Write and Edit are absent; Bash is denied without prompting, so there is
+  no shell-redirect escape. The refusal appears in `permission_denials`.
+- **`bypassPermissions` is unusable.** It maps to `--dangerously-skip-permissions`,
+  which refuses to run with root privileges and so fails outright in a container.
+  `acceptEdits` with an explicit allowlist works everywhere and is a fence rather
+  than the absence of one.
+- **`--output-format json` returns the manifest almost field for field**: `result`,
+  `is_error`, `subtype`, `num_turns`, `duration_ms`, `usage`, `total_cost_usd` and
+  `permission_denials`. §17's cost attribution per role comes free rather than as
+  future work.
+
+**Measured:** a cold phase costs ~31.6k cache-creation input tokens before it reads
+anything — roughly $0.13 at list on the default model. That is the fixed price of a
+phase boundary, so a six-phase run starts ~190k tokens in the hole. It is the number
+Q3 (§23) was missing.
 
 **codex**
 

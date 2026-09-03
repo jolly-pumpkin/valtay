@@ -1,6 +1,6 @@
-import { resolve, dirname } from "path";
+import { resolve } from "path";
 import { readdir } from "node:fs/promises";
-import { detectHosts, detectMarkers, pathExists, type HostSpec } from "../detect.ts";
+import { detectHosts, detectMarkers, findRepoRoot, pathExists, type HostSpec } from "../detect.ts";
 import { SKILL_FILES, SKILL_REL_DIR } from "../skills.ts";
 
 export interface InitOptions {
@@ -35,21 +35,6 @@ export interface InitResult {
   gitignore: Outcome;
   skillDir: string;
   skill: SkillOutcome;
-}
-
-/**
- * Nearest ancestor of `start` (inclusive) holding a `.git` entry, or null.
- * `.git` is a file rather than a directory in worktrees and submodules, so the
- * check is deliberately type-agnostic.
- */
-export async function findRepoRoot(start: string): Promise<string | null> {
-  let dir = resolve(start);
-  for (;;) {
-    if (await pathExists(resolve(dir, ".git"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
 }
 
 /** Immediate subdirectories of `dir` that are themselves repos, sorted. */

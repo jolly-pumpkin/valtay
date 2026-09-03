@@ -9,7 +9,7 @@ If a proposed feature would not survive a compliance review, it does not belong 
 
 | | |
 |---|---|
-| **Status** | Theory. No implementation exists. This document is the thing to argue with. |
+| **Status** | Argued, and now partly built. The spine runs end to end; see `IMPLEMENTED.md`. |
 | **Version** | 0.2 |
 | **Date** | 2026-09-01 |
 | **Owner** | Collin |
