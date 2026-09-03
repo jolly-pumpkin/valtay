@@ -325,6 +325,8 @@ detection. Two cheap recoveries, both used:
 - **A `valtay-compose` skill** your session loads, carrying the checklist for a
   complete spec: conflicts between documents, gaps with no design coverage,
   assumptions phrased as *questions* rather than findings, explicit out-of-scope.
+  Ships with Valtay as an asset and is installed at the project level by
+  `valtay init` — see `RUNSPEC.md`.
 - **`valtay check`** — a lint, not a phase. No artifacts, no gate, no state. Runs
   cross-vendor by default and reports what the drafting session missed. **Advisory,
   never blocking** — the same prioritizer-not-authority stance as the assessor

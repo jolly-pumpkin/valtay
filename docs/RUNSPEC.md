@@ -227,6 +227,20 @@ Valtay reads a file, never a conversation.
 
 ---
 
+## The `valtay-compose` skill
+
+`valtay init` installs the skill into `.claude/skills/valtay-compose/` at the init
+root, so a session drafting a spec in that repo loads it automatically. It ships with
+Valtay as an asset (`assets/skills/valtay-compose/`) — a `SKILL.md` carrying the
+completeness checklist plus `reference/format.md` (this format, self-contained) and
+`reference/example.md` (the filled example below).
+
+The install is gated on the repo already having a `.claude/` directory, so Valtay
+never creates one in a project that doesn't use Claude. Pass `--skill` to install
+anyway, or `--force` to overwrite a copy you have since hand-edited.
+
+---
+
 ## Full example
 
 ```yaml
