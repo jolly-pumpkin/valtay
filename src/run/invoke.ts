@@ -2,9 +2,11 @@ import { adapterFor } from "../hosts/index.ts";
 import type { HostRequest } from "../hosts/types.ts";
 import { loadPrompt } from "../prompts.ts";
 import { researchInput, sha256, section, type Runspec } from "../runspec.ts";
-import { outputPath, phase, type PhaseDef } from "./phases.ts";
+import { validatePlan } from "../plan.ts";
+import { outputPath, phase, phaseForArtifact, type PhaseDef } from "./phases.ts";
 import {
   appendManifest,
+  readApprovals,
   readArtifact,
   writeArtifact,
   type ArtifactRef,
@@ -99,23 +101,61 @@ export function trimPreamble(output: string, leading?: string): string {
   return index === -1 ? output : output.slice(index + 1);
 }
 
-/** A phase's output is unusable — the message is fed back on the retry. */
-function validate(def: PhaseDef, output: string): string | null {
-  if (output.trim().length === 0) return "the output was empty";
+export interface Validation {
+  /** Why the artifact is unusable. Fed back to the phase on the retry. */
+  error?: string;
+  /** The artifact as it should be stored, when validation normalized it. */
+  normalized?: string;
+}
+
+/**
+ * Checks a phase's output, and normalizes it where the stored form should differ
+ * from what the host emitted.
+ *
+ * JSON artifacts are re-serialized indented. A model emits `plan.json` on one line,
+ * and a one-line plan is unreadable at G3 — which design.md §12.1 requires be
+ * answerable from a phone. Reformatting on the way in is cheaper than asking the
+ * planner to indent and more reliable than hoping it does.
+ */
+function validate(run: Run, def: PhaseDef, output: string): Validation {
+  if (output.trim().length === 0) return { error: "the output was empty" };
 
   if (def.leading && !output.startsWith(def.leading)) {
-    return `the artifact must begin with "${def.leading}"`;
+    return { error: `the artifact must begin with "${def.leading}"` };
   }
 
-  if (def.format === "json") {
-    try {
-      JSON.parse(output);
-    } catch (err) {
-      return `the output is not valid JSON: ${err instanceof Error ? err.message : String(err)}`;
-    }
+  if (def.format !== "json") return {};
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch (err) {
+    return { error: `the output is not valid JSON: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  return null;
+  if (def.id === "plan") {
+    const problems = validatePlan(parsed, run.meta.config);
+    if (problems.length > 0) return { error: problems.join("; ") };
+  }
+
+  return { normalized: JSON.stringify(parsed, null, 2) };
+}
+
+/**
+ * The reviewer's own words, when this phase is being re-entered because they
+ * rejected its output.
+ *
+ * A rejection re-runs the phase with the correction appended — not the whole
+ * conversation, just what was wrong. Only the most recent one is carried: an older
+ * rejection of an artifact that has since been rewritten is stale advice.
+ */
+async function reviewerCorrection(run: Run, def: PhaseDef): Promise<string> {
+  const rejection = (await readApprovals(run))
+    .filter((a) => a.decision === "reject" && a.to && phaseForArtifact(a.to, run.meta.repo)?.id === def.id)
+    .at(-1);
+
+  if (!rejection?.reason) return "";
+  return `# Correction from your reviewer\n\nThey rejected the previous ${outputPath(def, run.meta.repo)}:\n\n${rejection.reason}\n`;
 }
 
 /**
@@ -135,11 +175,13 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
   const inputs = await inputsFor(run, spec, def);
   const output = outputPath(def, run.meta.repo);
 
+  const payload = renderPayload(inputs) + (await reviewerCorrection(run, def));
+
   const base: HostRequest = {
     binding,
     host,
     prompt,
-    input: renderPayload(inputs),
+    input: payload,
     workdir: run.meta.repo,
     readDirs: [run.dir],
     write: def.write,
@@ -154,9 +196,11 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
     const result = await adapterFor(host.adapter).run(request);
     const artifact = trimPreamble(result.output.trim(), def.leading);
 
-    const invalid = result.exit_code === 0 ? validate(def, artifact) : null;
-    const failure = result.error ?? invalid;
-    const ref = failure ? undefined : await writeArtifact(run, output, `${artifact}\n`);
+    const checked = result.exit_code === 0 ? validate(run, def, artifact) : {};
+    const failure = result.error ?? checked.error;
+    const ref = failure
+      ? undefined
+      : await writeArtifact(run, output, `${checked.normalized ?? artifact}\n`);
 
     const record: ManifestRecord = {
       ts: new Date().toISOString(),
@@ -181,8 +225,8 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
     if (!failure) return { ok: true, output: ref, attempts: attempt };
 
     lastError = failure;
-    correction = invalid
-      ? `# Correction\n\nYour previous attempt was rejected: ${invalid}. Emit only the artifact.\n`
+    correction = checked.error
+      ? `# Correction\n\nYour previous attempt was rejected: ${checked.error}. Emit only the artifact.\n`
       : "";
   }
 

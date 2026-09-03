@@ -5,6 +5,8 @@ import { runNew } from "./commands/new.ts";
 import { runInit, formatInitResult } from "./commands/init.ts";
 import { runStart, formatStartResult } from "./commands/start.ts";
 import { runStatusLines, selectRun } from "./commands/status.ts";
+import { runApprove, runReject } from "./commands/gate.ts";
+import { runShow } from "./commands/show.ts";
 import { advance } from "./run/orchestrator.ts";
 
 const program = new Command()
@@ -61,6 +63,32 @@ program
       return [...formatStartResult(run), "", ...(await advance(run))];
     })
   );
+
+program
+  .command("approve")
+  .description("Record approval of a gate and carry the run on")
+  .argument("<gate>", "gate ID, e.g. G1")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((gate, opts) => report(() => runApprove({ gate, ...opts })));
+
+program
+  .command("reject")
+  .description("Reject a gate and re-enter at the artifact that was wrong")
+  .argument("<gate>", "gate ID, e.g. G3")
+  .argument("<reason>", "what was wrong — the phase gets this verbatim")
+  .requiredOption("--to <artifact>", "artifact to re-enter at, e.g. design or plan.json")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((gate, reason, opts) => report(() => runReject({ gate, reason, ...opts })));
+
+program
+  .command("show")
+  .description("Print one of the run's artifacts")
+  .argument("<artifact>", "artifact path or stem, e.g. design or plan.json")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((artifact, opts) => report(() => runShow({ artifact, ...opts })));
 
 program
   .command("resume")

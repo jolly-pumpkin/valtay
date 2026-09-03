@@ -156,3 +156,26 @@ export function shapeExt(repoRoot: string): string {
 export function outputPath(def: PhaseDef, repoRoot: string): string {
   return def.output.replace("{ext}", shapeExt(repoRoot));
 }
+
+/**
+ * The phase that produces `name`, which may be the artifact's path (`design.md`) or
+ * its bare stem (`design`).
+ *
+ * This is what makes `valtay reject g4 --to design` mean something precise. Naming
+ * which artifact was wrong is the same discipline the probe's `fix_lives_in` applies
+ * (design.md §12.3), with the reviewer as the authority — so the target has to
+ * resolve to exactly one phase or be refused.
+ */
+export function phaseForArtifact(name: string, repoRoot: string): PhaseDef | null {
+  const wanted = name.trim().toLowerCase().replace(/\.[^.]+$/, "");
+
+  return (
+    PHASES.find((p) => outputPath(p, repoRoot).replace(/\.[^.]+$/, "").toLowerCase() === wanted) ??
+    null
+  );
+}
+
+/** Artifact stems a rejection may name, for error messages and help text. */
+export function artifactNames(repoRoot: string): string[] {
+  return PHASES.map((p) => outputPath(p, repoRoot));
+}

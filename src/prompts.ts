@@ -3,6 +3,8 @@ import { valtayHome } from "./config.ts";
 import type { PhaseId } from "./run/store.ts";
 import researchPrompt from "../assets/phases/research.md" with { type: "file" };
 import reconcilePrompt from "../assets/phases/reconcile.md" with { type: "file" };
+import shapePrompt from "../assets/phases/shape.md" with { type: "file" };
+import planPrompt from "../assets/phases/plan.md" with { type: "file" };
 
 /**
  * Phase prompts, shipped as assets.
@@ -18,6 +20,8 @@ import reconcilePrompt from "../assets/phases/reconcile.md" with { type: "file" 
 const SHIPPED: Partial<Record<PhaseId, string>> = {
   research: researchPrompt,
   reconcile: reconcilePrompt,
+  shape: shapePrompt,
+  plan: planPrompt,
 };
 
 /** Where a project-local override of a phase prompt lives. */

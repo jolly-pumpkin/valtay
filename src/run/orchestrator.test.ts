@@ -47,6 +47,30 @@ Make the store append rather than overwrite.
 
 const RESEARCH = "## Findings\n\n### A-1\n\n**Verdict:** confirmed. It appends (src/run/store.ts:12).";
 const DESIGN = "## End state\n\nIt appends.\n\n## Deltas\n\nD-1 nothing disagrees.";
+const SHAPE = "// NEW — the lint entry point\nexport function checkSpec(path: string): string[];";
+
+const PLAN = JSON.stringify({
+  epic: "append-only-manifest",
+  stacking: "none",
+  release_units: [
+    {
+      id: "RU-1",
+      goal: "the manifest appends",
+      checkpoint: "bun test",
+      layers: [
+        {
+          id: "L1",
+          title: "feat(store): append-only manifest",
+          kind: "semantic",
+          inert: false,
+          files: ["src/run/store.ts"],
+          est_loc: { add: 40, del: 2 },
+        },
+      ],
+    },
+  ],
+  alternatives_considered: [{ shape: "one layer per function", rejected: "fragmentation, no review gain" }],
+});
 
 async function start(responses: Parameters<typeof createReplayAdapter>[1]): Promise<{
   run: Run;
@@ -78,6 +102,8 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "valtay-orch-"));
   repo = resolve(root, "valtay");
   await mkdir(resolve(repo, ".git"), { recursive: true });
+  // Makes `shape.{ext}` resolve to TypeScript, as it does in the real repo.
+  await writeFile(resolve(repo, "package.json"), "{}");
   process.env["VALTAY_HOME"] = resolve(root, "home");
   restore = () => {};
 });
@@ -131,18 +157,31 @@ describe("advance", () => {
     expect(payload).toContain("Anything to do with the renderer");
   });
 
-  test("an approved gate lets the run carry on", async () => {
-    const { run } = await start([RESEARCH, DESIGN]);
+  test("an approved gate lets the run carry on to the next one", async () => {
+    const { run } = await start([RESEARCH, DESIGN, SHAPE, PLAN]);
     await advance(run);
     await approve(run, "G1");
+    await advance(run);
 
-    // Shape has no prompt shipped yet, so the next phase fails rather than silently
-    // producing nothing — which is the behaviour we want from a missing prompt.
-    await expect(advance(run)).rejects.toThrow(/No phase prompt for "shape"/);
+    // G1 cleared, so Reconcile is behind us and Shape has run and stopped at G2.
+    const state = await readState(run);
+    expect(state.completed).toEqual(["research", "reconcile"]);
+    expect(state).toMatchObject({ phase: "shape", status: "awaiting_gate", gate: "G2" });
+    expect(await readArtifact(run, "shape.ts")).toContain("checkSpec");
+  });
 
-    // G1 cleared, so Reconcile is behind us and Shape is the phase in flight.
-    expect((await readState(run)).completed).toEqual(["research", "reconcile"]);
-    expect((await readState(run)).phase).toBe("shape");
+  test("clears every gate in order and completes", async () => {
+    const { run } = await start([RESEARCH, DESIGN, SHAPE, PLAN]);
+
+    for (const gate of ["G1", "G2", "G3"] as const) {
+      await advance(run);
+      expect((await readState(run)).gate).toBe(gate);
+      await approve(run, gate);
+    }
+
+    // G4 and G6 belong to Probe and Build, which are not built yet.
+    await expect(advance(run)).rejects.toThrow(/No phase prompt for "probe"/);
+    expect((await readState(run)).completed).toEqual(["research", "reconcile", "shape", "plan"]);
   });
 
   test("resuming does not re-run a phase whose artifact is already on disk", async () => {
@@ -234,6 +273,46 @@ describe("the leading-heading fence", () => {
     expect(adapter.calls[1]!.input).toContain("# Correction");
     expect(adapter.calls[1]!.input).toContain('must begin with "## Findings"');
     expect(await readArtifact(run, "research.md")).toStartWith("## Findings");
+  });
+});
+
+describe("JSON artifacts", () => {
+  test("are stored indented, whatever the host emitted", async () => {
+    // Observed on the first live run: the planner emitted plan.json on one line,
+    // and a one-line plan cannot be reviewed at G3 — let alone from a phone.
+    const { run } = await start([RESEARCH, DESIGN, SHAPE, PLAN]);
+    expect(PLAN).not.toContain("\n");
+
+    await advance(run);
+    await approve(run, "G1");
+    await advance(run);
+    await approve(run, "G2");
+    await advance(run);
+
+    const stored = (await readArtifact(run, "plan.json"))!;
+    expect(stored).toContain('\n  "epic": "append-only-manifest"');
+    expect(JSON.parse(stored)).toEqual(JSON.parse(PLAN));
+  });
+
+  test("a plan that breaks the run budget is rejected, not stored", async () => {
+    const overBudget = JSON.stringify({
+      ...JSON.parse(PLAN),
+      release_units: Array.from({ length: 6 }, (_, i) => ({
+        ...JSON.parse(PLAN).release_units[0],
+        id: `RU-${i}`,
+      })),
+    });
+
+    const { run } = await start([RESEARCH, DESIGN, SHAPE, overBudget, overBudget]);
+    await advance(run);
+    await approve(run, "G1");
+    await advance(run);
+    await approve(run, "G2");
+    await advance(run);
+
+    expect((await readState(run)).status).toBe("failed");
+    expect(await readArtifact(run, "plan.json")).toBeNull();
+    expect((await readManifest(run)).at(-1)!.notes.join(" ")).toContain("exceeds the run budget");
   });
 });
 
