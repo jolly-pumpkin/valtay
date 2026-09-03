@@ -8,6 +8,7 @@ import { runStatusLines, selectRun } from "./commands/status.ts";
 import { runApprove, runReject } from "./commands/gate.ts";
 import { runShow } from "./commands/show.ts";
 import { runTrace } from "./commands/trace.ts";
+import { runCheck } from "./commands/check.ts";
 import { advance, retry } from "./run/orchestrator.ts";
 
 const program = new Command()
@@ -99,6 +100,12 @@ program
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
   .action((unit, opts) => report(() => runTrace({ unit, ...opts })));
+
+program
+  .command("check")
+  .description("Advisory lint over a run spec's frontmatter and sections")
+  .argument("<spec>", "path to the run spec to lint")
+  .action((spec) => report(() => runCheck({ spec })));
 
 program
   .command("resume")
