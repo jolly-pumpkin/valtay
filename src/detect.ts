@@ -1,4 +1,4 @@
-import { resolve } from "path";
+import { resolve, dirname } from "path";
 import { existsSync } from "fs";
 import { stat } from "node:fs/promises";
 
@@ -57,5 +57,20 @@ export async function pathExists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Nearest ancestor of `start` (inclusive) holding a `.git` entry, or null.
+ * `.git` is a file rather than a directory in worktrees and submodules, so the
+ * check is deliberately type-agnostic.
+ */
+export async function findRepoRoot(start: string): Promise<string | null> {
+  let dir = resolve(start);
+  for (;;) {
+    if (await pathExists(resolve(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
 }
