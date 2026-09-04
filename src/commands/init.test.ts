@@ -236,7 +236,7 @@ test("every skill is installed into a repo that already has .claude/", async () 
 
   const result = await runInit({ path: repo });
 
-  expect(result.skillsDir).toBe(resolve(repo, ".claude", "skills"));
+  expect(result.skillsDirs).toEqual([resolve(repo, ".claude", "skills")]);
   expect(result.skills.every((s) => s.outcome === "written")).toBe(true);
 
   for (const asset of COMPOSE_SKILL.files) {
@@ -266,14 +266,48 @@ test("a phase skill lands where the host will look for it", async () => {
   }
 });
 
-test("without .claude/ the skills are absent and no .claude/ is created", async () => {
+test("a codex-only project gets its skills where codex looks, and no .claude/", async () => {
+  // Before the codex adapter this installed nothing at all: the gate was the
+  // `.claude/` marker, so a codex-bound phase reached a host that had never been
+  // given its instructions.
   const repo = await makeRepo("repo");
-  await mkdir(resolve(repo, ".codex"), { recursive: true }); // codex-only project
+  await mkdir(resolve(repo, ".codex"), { recursive: true });
+
+  const result = await runInit({ path: repo });
+
+  expect(result.skillsDirs).toEqual([resolve(repo, ".codex", "skills")]);
+  expect(result.skills.every((s) => s.outcome === "written")).toBe(true);
+  expect(await exists(resolve(repo, ".codex", "skills", COMPOSE_SKILL.name, "SKILL.md"))).toBe(true);
+  expect(await exists(resolve(repo, ".claude"))).toBe(false);
+});
+
+test("with no agent config at all the skills are absent", async () => {
+  const repo = await makeRepo("repo");
 
   const result = await runInit({ path: repo });
 
   expect(result.skills.every((s) => s.outcome === "absent")).toBe(true);
   expect(await exists(resolve(repo, ".claude"))).toBe(false);
+});
+
+test("a repo carrying both markers gets the skills in both roots", async () => {
+  // The cross-vendor case invariant 9 needs: whichever host a role is bound to, the
+  // phase is present where that host looks for it.
+  const repo = await makeRepo("repo");
+  await mkdir(resolve(repo, ".claude"), { recursive: true });
+  await mkdir(resolve(repo, ".codex"), { recursive: true });
+
+  const result = await runInit({ path: repo });
+
+  expect(result.skillsDirs.sort()).toEqual(
+    [resolve(repo, ".claude", "skills"), resolve(repo, ".codex", "skills")].sort()
+  );
+
+  for (const def of PHASES) {
+    const name = phaseSkillName(def.id);
+    expect(await exists(resolve(repo, skillRelDir(name, "claude-code"), "SKILL.md"))).toBe(true);
+    expect(await exists(resolve(repo, skillRelDir(name, "codex"), "SKILL.md"))).toBe(true);
+  }
 });
 
 test("--skill installs into a repo with no .claude/", async () => {

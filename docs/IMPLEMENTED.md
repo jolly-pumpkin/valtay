@@ -46,7 +46,10 @@ CLI: `init`, `new`, `check`, `start`, `status`, `show`, `trace`, `approve`,
   cannot be backfilled.
 - **Stacking, CODEOWNERS, multi-team planning.** Every heuristic in §9.3 clause 4 is
   a no-op for one developer in one repo.
-- **A second host adapter and the cross-vendor critic.** Only `claude` is installed.
+- **The cross-vendor critic.** The `codex` adapter now exists, so the *environment*
+  can satisfy invariant 9 — but `assessor`, `warden` and `critic` are still bindable
+  roles that no phase invokes, and `valtay check` still makes no model call. Those are
+  their own tickets.
 
 ### Built since the first run
 
@@ -57,6 +60,15 @@ CLI: `init`, `new`, `check`, `start`, `status`, `show`, `trace`, `approve`,
   to spawn a binary, not reimplement prompt delivery. Verified against the binary:
   `claude -p` does not auto-invoke a skill on relevance, but it does expand a leading
   `/name` on stdin, and a payload sent without one comes back visibly uninstructed.
+- **A second host adapter.** `src/hosts/codex.ts` runs `codex exec` as a headless
+  one-shot, and a role bound to `[hosts.codex]` now runs instead of throwing
+  `No adapter "codex"`. `valtay init` installs the phase skills into every detected
+  host's root rather than always `.claude/skills/`, which is what a codex-only repo
+  needed to work at all. Verified against codex-cli 0.153.3: the sandbox modes are a
+  real read/write fence, `-c model_reasoning_effort` is a recognized field, and
+  `--output-last-message` is the artifact. **Not yet verified end to end** — no
+  OpenAI credentials were available, so no phase has run against a live codex model.
+  The native/tmux adapter for the daemon is still unbuilt.
 
 ### Where the code knowingly differs from the design
 
@@ -69,9 +81,18 @@ CLI: `init`, `new`, `check`, `start`, `status`, `show`, `trace`, `approve`,
   hook that refuses the write; we check the commit afterwards. Same rule, one rung
   lower on the ladder. A layer that widened its own footprint is named at G6 and in
   the manifest rather than stopped at the keystroke.
-- **Invariant 9 is violated by the environment.** With one vendor, nothing is graded
-  by a different one. Every run records `vendor_diversity: false` so these runs stay
-  distinguishable from later cross-vendor ones.
+- **Invariant 9 is now possible, and still not enforced.** A second adapter means a
+  run *can* bind two vendors, and one that does records `vendor_diversity: true`. But
+  that flag is weaker than the invariant it is named for: it is true when any two of
+  the nine roles differ in host, not when the grader of an artifact differs from its
+  producer. Nothing reads it to block, and the three grading roles are still never
+  invoked. So a cross-vendor run is currently a run that *could* grade across vendors,
+  not one that does.
+- **The codex adapter inlines the phase body.** design.md §7.4 says an adapter
+  delivers a name; codex has no deterministic way to accept one, so its adapter reads
+  the installed SKILL.md and inlines it. The file still lives where codex's own loader
+  reads it, and every invocation carries a manifest note saying the substitution
+  happened. §7.2 has the evidence.
 
 ---
 

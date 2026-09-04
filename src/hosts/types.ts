@@ -42,6 +42,16 @@ export interface HostResult {
   permission_denials?: unknown[];
   /** Set when the invocation failed; the host's own text, never paraphrased. */
   error?: string;
+  /**
+   * Parts of the binding the host could not honor, in its own words.
+   *
+   * design.md §7.1 asks for absent capabilities to "degrade explicitly" — `effort`
+   * dropped *with a manifest note*, and the same for anything else an adapter
+   * silently cannot do. These reach the manifest on a successful invocation too, so
+   * a run whose effort never took effect is visible after the fact rather than only
+   * to whoever read the adapter.
+   */
+  notes?: string[];
 }
 
 export interface HostAdapter {

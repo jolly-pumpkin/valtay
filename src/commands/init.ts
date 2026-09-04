@@ -4,7 +4,7 @@ import { detectHosts, detectMarkers, findRepoRoot, pathExists, type HostSpec } f
 import {
   installSkills,
   shippedSkills,
-  HOST_SKILL_ROOTS,
+  skillRootFor,
   type InstalledSkill,
 } from "../skills.ts";
 
@@ -22,10 +22,10 @@ export interface InitOptions {
 export type Mode = "repo" | "workspace";
 export type Outcome = "written" | "skipped";
 
-/** `absent` means the root carries no `.claude/`, so nothing was installed. */
+/** `absent` means the root carries no agent config at all, so nothing was installed. */
 export type SkillOutcome = Outcome | "absent";
 
-/** An installed skill, or one `init` left alone because the root carries no `.claude/`. */
+/** An installed skill, or one `init` left alone because the root has no agent config. */
 export type SkillReport = Omit<InstalledSkill, "outcome"> & { outcome: SkillOutcome };
 
 export interface InitResult {
@@ -39,9 +39,13 @@ export interface InitResult {
   config: Outcome;
   gitignorePath: string;
   gitignore: Outcome;
-  /** The directory the skills were installed under, whether or not any were. */
-  skillsDir: string;
-  /** One entry per shipped skill: valtay-compose, then one per phase. */
+  /**
+   * The directories the skills were installed under, whether or not any were — one
+   * per detected host family, because a cross-vendor run needs the phase present
+   * wherever each host will look for it.
+   */
+  skillsDirs: string[];
+  /** One entry per shipped skill per skills directory. */
   skills: SkillReport[];
 }
 
@@ -146,26 +150,49 @@ async function writeUnlessPresent(
 }
 
 /**
- * Installs the shipped skills into `<root>/.claude/skills/`.
+ * The skill directories to install into, one per detected host family.
  *
- * Gated on the `.claude/` marker rather than on the detected hosts, because
+ * Derived from the detected hosts rather than fixed at `.claude/skills`, because a
+ * phase is loaded by whichever host the role is bound to and codex looks somewhere
+ * else entirely. A repo carrying both markers gets both, which is the arrangement a
+ * cross-vendor run needs (invariant 9).
+ */
+export function skillsDirsFor(root: string, hosts: HostSpec[]): string[] {
+  const roots = new Set(hosts.map((h) => skillRootFor(h.adapter)));
+  return [...roots].map((rel) => resolve(root, rel));
+}
+
+/**
+ * Installs the shipped skills into each of `skillsDirs`.
+ *
+ * Gated on any known agent-config marker rather than on the detected hosts, because
  * `detectHosts` falls back to claude-code for every repo and so would install into
- * codex-only projects too. The copying itself lives in `skills.ts`, so a test fixture
- * that needs a repo the phases can actually run in uses the same code path.
+ * projects that use neither. Before this ticket the gate was `.claude/` alone, which
+ * left a codex-only project with no phase skills at all — an adapter that could not
+ * find its phase.
+ *
+ * The copying itself lives in `skills.ts`, so a test fixture that needs a repo the
+ * phases can actually run in uses the same code path.
  */
 async function installSkillsIfInScope(
   root: string,
-  skillsDir: string,
+  skillsDirs: string[],
   options: InitOptions
 ): Promise<SkillReport[]> {
-  const hasClaude = (await detectMarkers(root)).includes(".claude/");
+  const configured = (await detectMarkers(root)).length > 0;
 
-  if (!hasClaude && options.skill !== true) {
+  if (!configured && options.skill !== true) {
     const skills = await shippedSkills();
-    return skills.map((s) => ({ name: s.name, dir: resolve(skillsDir, s.name), outcome: "absent" }));
+    return skillsDirs.flatMap((dir) =>
+      skills.map((s) => ({ name: s.name, dir: resolve(dir, s.name), outcome: "absent" as const }))
+    );
   }
 
-  return installSkills(skillsDir, options.force === true);
+  const reports: SkillReport[] = [];
+  for (const dir of skillsDirs) {
+    reports.push(...(await installSkills(dir, options.force === true)));
+  }
+  return reports;
 }
 
 export async function runInit(options: InitOptions = {}): Promise<InitResult> {
@@ -191,8 +218,8 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
   const gitignorePath = resolve(root, ".valtay", ".gitignore");
   const gitignore = await writeUnlessPresent(gitignorePath, "", false);
 
-  const skillsDir = resolve(root, HOST_SKILL_ROOTS["claude-code"]!);
-  const skills = await installSkillsIfInScope(root, skillsDir, options);
+  const skillsDirs = skillsDirsFor(root, hosts);
+  const skills = await installSkillsIfInScope(root, skillsDirs, options);
 
   return {
     mode,
@@ -203,7 +230,7 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
     config,
     gitignorePath,
     gitignore,
-    skillsDir,
+    skillsDirs,
     skills,
   };
 }
@@ -219,12 +246,12 @@ export function formatInitResult(result: InitResult): string[] {
   lines.push(note(result.config, "valtay.toml"));
   lines.push(note(result.gitignore, ".valtay/.gitignore"));
 
-  const skillsName = `${HOST_SKILL_ROOTS["claude-code"]}/`;
+  const skillsName = result.hosts.map((h) => `${skillRootFor(h.adapter)}/`).join(", ");
   const written = result.skills.filter((s) => s.outcome === "written");
   const present = result.skills.filter((s) => s.outcome === "skipped");
 
   if (result.skills.every((s) => s.outcome === "absent")) {
-    lines.push(`  skipped ${skillsName} (no .claude/ — use --skill)`);
+    lines.push(`  skipped ${skillsName} (no agent config — use --skill)`);
   } else if (written.length === 0) {
     lines.push(`  skipped ${skillsName} (${present.length} skills already present)`);
   } else {

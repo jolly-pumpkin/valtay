@@ -34,17 +34,42 @@ export interface ShippedSkill {
  * Where a host looks for an installed skill, relative to the root it was installed
  * into.
  *
- * One entry per host family. Only claude-code is here because only claude-code has an
- * adapter; the codex destination lands with the codex adapter
- * (`_tickets/second-host-adapter.md`) rather than being guessed now.
+ * One entry per host family, keyed by adapter name. The codex root is where the
+ * binary itself looks — verified against codex-cli 0.153.3, whose skill loader reads
+ * `.codex/skills/<name>/SKILL.md` (and `$CODEX_HOME/skills` for user-level ones).
+ *
+ * Installing there is worth doing even though the codex adapter also inlines the
+ * body (see `hosts/codex.ts`): it keeps the pre-flight check in `run/invoke.ts`
+ * honest, keeps `prompt_sha` a hash of the file the host would load, and puts the
+ * phase where a human running codex by hand will find it.
  */
 export const HOST_SKILL_ROOTS: Readonly<Record<string, string>> = {
   "claude-code": ".claude/skills",
+  codex: ".codex/skills",
 };
 
+/** The default adapter for callers that predate a second host. */
+export const DEFAULT_ADAPTER = "claude-code";
+
+/**
+ * The skill root for `adapter`.
+ *
+ * Throws rather than falling back: a host whose root we do not know would otherwise
+ * be handed `.claude/skills`, find nothing there, and answer the payload
+ * conversationally — the expensive, silent failure `phaseSkillIn` exists to prevent.
+ */
+export function skillRootFor(adapter: string): string {
+  const root = HOST_SKILL_ROOTS[adapter];
+  if (!root) {
+    const known = Object.keys(HOST_SKILL_ROOTS).join(", ");
+    throw new Error(`No skill root for adapter "${adapter}". Known: ${known}`);
+  }
+  return root;
+}
+
 /** Where a skill installs to, relative to the init root. */
-export function skillRelDir(name: string): string {
-  return `${HOST_SKILL_ROOTS["claude-code"]}/${name}`;
+export function skillRelDir(name: string, adapter: string = DEFAULT_ADAPTER): string {
+  return `${skillRootFor(adapter)}/${name}`;
 }
 
 /** The skill valtay installs at the project level to help author run specs. */
@@ -118,11 +143,15 @@ export async function shippedSkills(): Promise<ShippedSkill[]> {
  * The SKILL.md a host will actually load for `id`, under `root`.
  *
  * `root` is the directory the host runs in — the repo for a read-only phase, the
- * worktree for a write one. Both must carry the installed skill, which is why
- * `.claude/skills/` has to be committed: a git worktree only gets tracked files.
+ * worktree for a write one. Both must carry the installed skill, which is why the
+ * skills directory has to be committed: a git worktree only gets tracked files.
  */
-export function installedSkillPath(root: string, id: PhaseId): string {
-  return resolve(root, skillRelDir(phaseSkillName(id)), "SKILL.md");
+export function installedSkillPath(
+  root: string,
+  id: PhaseId,
+  adapter: string = DEFAULT_ADAPTER
+): string {
+  return resolve(root, skillRelDir(phaseSkillName(id), adapter), "SKILL.md");
 }
 
 export interface InstalledSkill {

@@ -593,3 +593,117 @@ describe("gate coverage", () => {
     expect(lines).toContain("valtay approve G1");
   });
 });
+
+describe("cross-vendor runs", () => {
+  /**
+   * A repo bound to two hosts, with the phase skills present in both roots.
+   *
+   * This is the arrangement invariant 9 needs and that no run could have before the
+   * codex adapter existed: `adapterFor("codex")` threw at the first invocation.
+   */
+  async function crossVendorRepo(): Promise<void> {
+    await writeFile(
+      resolve(repo, "valtay.toml"),
+      [
+        "[hosts.claude-code]",
+        'bin = "claude"',
+        'adapter = "claude-code"',
+        "",
+        "[hosts.codex]",
+        'bin = "codex"',
+        'adapter = "codex"',
+        "",
+        "[roles.default]",
+        'host = "claude-code"',
+        'model = "sonnet"',
+        'timeout = "10m"',
+        "",
+        "[roles.designer]",
+        'host = "codex"',
+        'model = "gpt-5.6-luna"',
+      ].join("\n")
+    );
+
+    await installSkills(resolve(repo, ".codex", "skills"));
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "--quiet", "-m", "cross-vendor"]);
+  }
+
+  test("a role bound to codex runs on the codex adapter", async () => {
+    await crossVendorRepo();
+
+    const claude = createReplayAdapter("claude-code", [RESEARCH]);
+    const codex = createReplayAdapter("codex", [DESIGN]);
+    const restoreClaude = registerAdapter(claude);
+    const restoreCodex = registerAdapter(codex);
+    restore = () => {
+      restoreCodex();
+      restoreClaude();
+    };
+
+    const path = resolve(repo, "runspec.md");
+    await writeFile(path, SPEC);
+    const run = await runStart({ spec: path, repo });
+    await advance(run);
+
+    // Research is the default binding, Reconcile is the codex one. The split is the
+    // point: one vendor produced research.md, another produced design.md.
+    expect(claude.calls).toHaveLength(1);
+    expect(codex.calls).toHaveLength(1);
+    expect(await readArtifact(run, "design.md")).toContain("End state");
+
+    const manifest = await readManifest(run);
+    expect(manifest.find((r) => r.phase === "research")?.host).toBe("claude-code");
+    expect(manifest.find((r) => r.phase === "reconcile")?.host).toBe("codex");
+  });
+
+  test("the run records that it was graded across vendors", async () => {
+    await crossVendorRepo();
+
+    const claude = createReplayAdapter("claude-code", [RESEARCH]);
+    const codex = createReplayAdapter("codex", [DESIGN]);
+    const restoreClaude = registerAdapter(claude);
+    const restoreCodex = registerAdapter(codex);
+    restore = () => {
+      restoreCodex();
+      restoreClaude();
+    };
+
+    const path = resolve(repo, "runspec.md");
+    await writeFile(path, SPEC);
+    const run = await runStart({ spec: path, repo });
+
+    // Before a second adapter existed this was false for every run, and
+    // IMPLEMENTED.md recorded invariant 9 as violated by the environment.
+    expect(run.meta.vendor_diversity).toBe(true);
+  });
+
+  test("a codex phase looks for its skill under .codex/, not .claude/", async () => {
+    await crossVendorRepo();
+    await rm(resolve(repo, ".codex", "skills", phaseSkillName("reconcile")), {
+      recursive: true,
+      force: true,
+    });
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["commit", "--quiet", "-m", "drop the codex reconcile skill"]);
+
+    const claude = createReplayAdapter("claude-code", [RESEARCH]);
+    const codex = createReplayAdapter("codex", []);
+    const restoreClaude = registerAdapter(claude);
+    const restoreCodex = registerAdapter(codex);
+    restore = () => {
+      restoreCodex();
+      restoreClaude();
+    };
+
+    const path = resolve(repo, "runspec.md");
+    await writeFile(path, SPEC);
+    const run = await runStart({ spec: path, repo });
+    const lines = (await advance(run)).join("\n");
+
+    // The claude-code copy is still there, so a lookup that ignored the binding
+    // would have found it and burned an invocation discovering the mistake.
+    expect(codex.calls).toHaveLength(0);
+    expect(lines).toContain(".codex/skills");
+  });
+});
