@@ -252,27 +252,35 @@ degrade explicitly:
 
 ```bash
 # read-only phase (1-4)
-printf '%s' "$PAYLOAD" | claude -p --output-format json --model opus --effort high \
-  --append-system-prompt "$(cat ~/.valtay/phases/designer.md)" \
+printf '/valtay-designer\n\n%s' "$PAYLOAD" \
+  | claude -p --output-format json --model opus --effort high \
   --permission-mode dontAsk --disallowed-tools "Edit Write NotebookEdit" \
   --add-dir "$RUNDIR"
 
 # write phase (5, 7), inside the worktree
-printf '%s' "$PAYLOAD" | claude -p --output-format json --model luna \
-  --append-system-prompt "$(cat ~/.valtay/phases/builder.md)" \
+printf '/valtay-builder\n\n%s' "$PAYLOAD" \
+  | claude -p --output-format json --model luna \
   --permission-mode acceptEdits --allowed-tools "Bash Read Write Edit NotebookEdit Glob Grep"
 ```
 
-Append rather than replace the system prompt — replacing it breaks the host's own
-tool guidance.
+The phase's instructions are **not** injected. They are a skill the host loads
+itself, from `<workdir>/.claude/skills/valtay-<phase>/SKILL.md`, which `valtay init`
+installs (§7.4).
 
-Four things the spike settled, each of which changed the code:
+Five things the spike settled, each of which changed the code:
 
 - **The payload goes on stdin, never as an argument.** `--disallowed-tools
   <tools...>` and `--add-dir <directories...>` are variadic and swallow a trailing
   positional prompt; the CLI then fails with "Input must be provided either through
   stdin or as a prompt argument". Stdin sidesteps it and lifts the argv length
   ceiling, which matters once a phase's inputs are several artifacts long.
+- **`-p` expands a leading `/skill-name`, on stdin as well as in an argument.** It
+  does *not* auto-invoke a skill on relevance the way an interactive session does, so
+  naming it is required and is also what we want: a phase is chosen by the
+  orchestrator, never by a model deciding it looks relevant. Verified against 2.1.260
+  with the real `research` SKILL.md — the slash line returns the artifact in the shape
+  the skill specifies, and the same payload without it comes back visibly
+  uninstructed, which is what the `leading` fence catches.
 - **`dontAsk` plus the write tools denied is a real read-only fence.** Read, Grep and
   Glob work; Write and Edit are absent; Bash is denied without prompting, so there is
   no shell-redirect escape. The refusal appears in `permission_denials`.
@@ -314,6 +322,45 @@ it.** Going through the plugin means a phase's inputs are mediated by a live Cla
 session (violating "no conversation state crosses a phase boundary"), failure
 semantics belong to someone else's code, and it adds a layer between Valtay and a
 binary it already calls.
+
+### 7.4 A phase is a skill
+
+Phase instructions ship as `SKILL.md` files (`assets/phases/<id>/SKILL.md`), and
+`valtay init` installs them into the project alongside `valtay-compose`:
+
+```
+.claude/skills/valtay-compose/SKILL.md    # you, drafting a run spec
+.claude/skills/valtay-research/SKILL.md   # phase 1
+.claude/skills/valtay-reconcile/SKILL.md  # phase 2, and so on
+```
+
+An adapter therefore delivers a **name**, not a body. That is the portability
+prerequisite: the codex adapter spawns a different binary rather than reimplementing
+prompt injection, and the same file loads unchanged in the daemon's native sessions
+(§18.1), which have no `--append-system-prompt` hook in the loop.
+
+Three consequences worth stating:
+
+- **`.claude/skills/` must be committed.** Probe and Build run in a git worktree,
+  which carries tracked files only. An uncommitted phase skill is a phase that cannot
+  start there.
+- **A missing skill fails before the model is called.** A host that cannot find the
+  skill does not report that; it answers the payload conversationally with none of the
+  phase's rules, which costs a full invocation to discover. `run/invoke.ts` checks the
+  file is where the host will look for it and fails the phase with zero attempts.
+- **`prompt_sha` hashes the installed file, not the shipped asset**, so a hand-edited
+  phase skill is visible in the manifest rather than indistinguishable from ours.
+
+Frontmatter carries `name`, `description` and `disable-model-invocation: true` — a
+phase is chosen by the orchestrator, and these sit in your repo where a model would
+otherwise auto-trigger them. It carries no `model` or `effort` (invariant 4: bindings
+come from config, never from a prompt) and no `allowed-tools`: those are per-turn
+pre-approvals that clear on the next message, so the CLI flags above stay the fence.
+
+The override at `~/.valtay/phases/<id>/SKILL.md` is unchanged in role (§16.2) — it is
+what `valtay init` installs when present, and Valtay still never writes there. Since
+install skips a file already in place, a changed override reaches a project on
+`valtay init --force`.
 
 ---
 

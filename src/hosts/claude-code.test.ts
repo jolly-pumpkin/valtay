@@ -1,12 +1,12 @@
 import { test, expect, describe } from "bun:test";
-import { claudeArgs } from "./claude-code.ts";
+import { claudeArgs, skillPayload } from "./claude-code.ts";
 import { stripFence } from "./types.ts";
 import type { HostRequest } from "./types.ts";
 
 const request = (overrides: Partial<HostRequest> = {}): HostRequest => ({
   binding: { host: "claude-code", model: "opus", effort: "high", timeout_ms: 600_000 },
   host: { bin: "claude", adapter: "claude-code" },
-  prompt: "# Role: researcher",
+  skill: { name: "valtay-research", path: "/repo/.claude/skills/valtay-research/SKILL.md" },
   input: "payload",
   workdir: "/repo",
   write: false,
@@ -56,13 +56,32 @@ describe("claudeArgs", () => {
     expect(args.at(-1)).toBe("/runs/demo");
   });
 
-  test("the role prompt is appended rather than replacing the host's own", () => {
+  test("the phase's instructions are never injected as a prompt", () => {
+    // The host loads the skill itself from `<workdir>/.claude/skills/`, which is what
+    // keeps a phase portable: the next adapter spawns a different binary instead of
+    // reimplementing prompt injection.
     const args = claudeArgs(request());
-    const index = args.indexOf("--append-system-prompt");
 
-    expect(index).toBeGreaterThan(-1);
-    expect(args[index + 1]).toBe("# Role: researcher");
+    expect(args).not.toContain("--append-system-prompt");
     expect(args).not.toContain("--system-prompt");
+    expect(args.join(" ")).not.toContain("valtay-research");
+  });
+});
+
+describe("skillPayload", () => {
+  test("names the skill as a slash command ahead of the inputs", () => {
+    // `-p` does not auto-invoke a skill on relevance; it does expand a leading
+    // `/name`, including on stdin. Verified against claude 2.1.260.
+    expect(skillPayload(request({ input: "# Assumptions\n\n- A-1 ..." }))).toBe(
+      "/valtay-research\n\n# Assumptions\n\n- A-1 ..."
+    );
+  });
+
+  test("the payload is still never an argument", () => {
+    const req = request({ input: "SENTINEL" });
+
+    expect(claudeArgs(req)).not.toContain("SENTINEL");
+    expect(skillPayload(req)).toContain("SENTINEL");
   });
 });
 

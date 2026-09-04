@@ -8,6 +8,8 @@ import { registerAdapter } from "../hosts/index.ts";
 import { git, worktreePath } from "../worktree.ts";
 import { pathExists } from "../detect.ts";
 import { readLedger } from "../ledger.ts";
+import { installSkills, phaseSkillName } from "../skills.ts";
+import { sha256 } from "../runspec.ts";
 import { advance, gateArtifacts, retry } from "./orchestrator.ts";
 import { phase } from "./phases.ts";
 import {
@@ -148,6 +150,11 @@ async function initRepo(dir: string): Promise<void> {
   // Makes `shape.{ext}` resolve to TypeScript, as it does in the real repo.
   await writeFile(resolve(dir, "package.json"), "{}");
 
+  // A phase is a skill the host loads from the directory it runs in, so a repo with
+  // none is a repo no phase can start in. Committed, not just written: Probe and
+  // Build run in a worktree, which carries tracked files only.
+  await installSkills(resolve(dir, ".claude", "skills"));
+
   await git(dir, ["init", "--quiet", "-b", "main"]);
   await git(dir, ["config", "user.email", "test@example.com"]);
   await git(dir, ["config", "user.name", "Test"]);
@@ -199,6 +206,51 @@ describe("advance", () => {
     for (const leak of ["Make the store append", "V-1", "renderer"]) {
       expect(payload).not.toContain(leak);
     }
+  });
+
+  test("each phase is handed its own skill, where the host will look for it", async () => {
+    const { run, adapter } = await start([RESEARCH, DESIGN]);
+    await advance(run);
+
+    expect(adapter.calls.map((c) => c.skill.name)).toEqual(["valtay-research", "valtay-reconcile"]);
+
+    // The path has to sit inside the directory the host runs in — that is the whole
+    // mechanism, since Claude Code resolves `/valtay-research` against `<cwd>/.claude/skills/`.
+    for (const call of adapter.calls) {
+      expect(call.skill.path).toBe(
+        resolve(call.workdir, ".claude", "skills", call.skill.name, "SKILL.md")
+      );
+    }
+  });
+
+  test("the manifest records the skill, hashed as the host found it", async () => {
+    const { run } = await start([RESEARCH, DESIGN]);
+    await advance(run);
+
+    const installed = resolve(repo, ".claude", "skills", phaseSkillName("research"), "SKILL.md");
+    const record = (await readManifest(run)).find((r) => r.phase === "research");
+
+    expect(record?.skill).toBe("valtay-research");
+    expect(record?.prompt_sha).toBe(sha256(await Bun.file(installed).text()));
+  });
+
+  test("a phase whose skill is not installed fails without invoking the host", async () => {
+    const { run, adapter } = await start([RESEARCH, DESIGN]);
+    await rm(resolve(repo, ".claude", "skills", phaseSkillName("research")), {
+      recursive: true,
+      force: true,
+    });
+
+    const lines = (await advance(run)).join("\n");
+
+    // The point of the preflight: a host that cannot find the skill does not say so,
+    // it answers conversationally. Discovering that costs a full invocation, so the
+    // absence is caught before anything is spawned.
+    expect(adapter.calls).toHaveLength(0);
+    expect(lines).toContain("FAILED after 0 attempt(s)");
+    expect(lines).toContain(".claude/skills/valtay-research/SKILL.md");
+    expect(lines).toContain("valtay init");
+    expect(await readState(run)).toMatchObject({ phase: "research", status: "failed" });
   });
 
   test("Reconcile is given the request and the research, but not the assumptions", async () => {

@@ -1,3 +1,11 @@
+---
+name: valtay-plan
+description: >-
+  Phase 4 of a Valtay run. Cut the change into release units and review layers.
+  Invoked by the orchestrator, never by hand.
+disable-model-invocation: true
+---
+
 # Role: planner (phase 4)
 
 You are the Plan phase of a Valtay run. You decide how the change is cut into

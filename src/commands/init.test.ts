@@ -2,8 +2,9 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, mkdir, rm, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
-import { runInit } from "./init.ts";
-import { SKILL_FILES, SKILL_NAME, SKILL_REL_DIR } from "../skills.ts";
+import { runInit, type InitResult } from "./init.ts";
+import { COMPOSE_SKILL, phaseSkillName, shippedSkills, skillRelDir } from "../skills.ts";
+import { PHASES } from "../run/phases.ts";
 
 let root: string;
 
@@ -219,33 +220,59 @@ async function makeClaudeRepo(...segments: string[]): Promise<string> {
   return dir;
 }
 
-const skillFile = (root: string, rel: string) => resolve(root, SKILL_REL_DIR, rel);
+/** A file inside one installed skill. */
+const skillFile = (root: string, name: string, rel: string) =>
+  resolve(root, skillRelDir(name), rel);
 
-test("the skill is installed into a repo that already has .claude/", async () => {
+/** The compose skill, which is the one with reference files to check. */
+const composeFile = (root: string, rel: string) =>
+  skillFile(root, COMPOSE_SKILL.name, rel);
+
+const outcomeOf = (result: InitResult, name: string) =>
+  result.skills.find((s) => s.name === name)?.outcome;
+
+test("every skill is installed into a repo that already has .claude/", async () => {
   const repo = await makeClaudeRepo("repo");
 
   const result = await runInit({ path: repo });
 
-  expect(result.skill).toBe("written");
-  expect(result.skillDir).toBe(resolve(repo, ".claude", "skills", SKILL_NAME));
+  expect(result.skillsDir).toBe(resolve(repo, ".claude", "skills"));
+  expect(result.skills.every((s) => s.outcome === "written")).toBe(true);
 
-  for (const asset of SKILL_FILES) {
-    expect(await exists(skillFile(repo, asset.rel))).toBe(true);
+  for (const asset of COMPOSE_SKILL.files) {
+    expect(await exists(composeFile(repo, asset.rel))).toBe(true);
   }
 
-  const md = await readFile(skillFile(repo, "SKILL.md"), "utf-8");
+  const md = await readFile(composeFile(repo, "SKILL.md"), "utf-8");
   expect(md.startsWith("---\n")).toBe(true);
-  expect(md).toContain(`name: ${SKILL_NAME}`);
+  expect(md).toContain(`name: ${COMPOSE_SKILL.name}`);
   expect(md).toContain("description:");
 });
 
-test("without .claude/ the skill is absent and no .claude/ is created", async () => {
+test("a phase skill lands where the host will look for it", async () => {
+  const repo = await makeClaudeRepo("repo");
+
+  const result = await runInit({ path: repo });
+
+  // The adapter names `/valtay-research`; Claude Code resolves that against
+  // `<workdir>/.claude/skills/`. These two have to agree or the phase runs
+  // uninstructed.
+  for (const def of PHASES) {
+    const name = phaseSkillName(def.id);
+    expect(outcomeOf(result, name)).toBe("written");
+
+    const md = await readFile(skillFile(repo, name, "SKILL.md"), "utf-8");
+    expect(md).toContain(`name: ${name}`);
+  }
+});
+
+test("without .claude/ the skills are absent and no .claude/ is created", async () => {
   const repo = await makeRepo("repo");
   await mkdir(resolve(repo, ".codex"), { recursive: true }); // codex-only project
 
   const result = await runInit({ path: repo });
 
-  expect(result.skill).toBe("absent");
+  expect(result.skills.every((s) => s.outcome === "absent")).toBe(true);
   expect(await exists(resolve(repo, ".claude"))).toBe(false);
 });
 
@@ -254,40 +281,41 @@ test("--skill installs into a repo with no .claude/", async () => {
 
   const result = await runInit({ path: repo, skill: true });
 
-  expect(result.skill).toBe("written");
-  expect(await exists(skillFile(repo, "SKILL.md"))).toBe(true);
+  expect(outcomeOf(result, COMPOSE_SKILL.name)).toBe("written");
+  expect(await exists(composeFile(repo, "SKILL.md"))).toBe(true);
+  expect(await exists(skillFile(repo, phaseSkillName("research"), "SKILL.md"))).toBe(true);
 });
 
 test("re-running leaves a hand-edited skill alone unless --force", async () => {
   const repo = await makeClaudeRepo("repo");
   await runInit({ path: repo });
-  await writeFile(skillFile(repo, "SKILL.md"), "# hand-edited\n");
+  await writeFile(composeFile(repo, "SKILL.md"), "# hand-edited\n");
 
   const second = await runInit({ path: repo });
-  expect(second.skill).toBe("skipped");
-  expect(await readFile(skillFile(repo, "SKILL.md"), "utf-8")).toBe("# hand-edited\n");
+  expect(second.skills.every((s) => s.outcome === "skipped")).toBe(true);
+  expect(await readFile(composeFile(repo, "SKILL.md"), "utf-8")).toBe("# hand-edited\n");
 
   const forced = await runInit({ path: repo, force: true });
-  expect(forced.skill).toBe("written");
-  expect(await readFile(skillFile(repo, "SKILL.md"), "utf-8")).toContain(
-    `name: ${SKILL_NAME}`
+  expect(forced.skills.every((s) => s.outcome === "written")).toBe(true);
+  expect(await readFile(composeFile(repo, "SKILL.md"), "utf-8")).toContain(
+    `name: ${COMPOSE_SKILL.name}`
   );
 });
 
 test("a missing reference file is restored without touching a hand-edited SKILL.md", async () => {
   const repo = await makeClaudeRepo("repo");
   await runInit({ path: repo });
-  await writeFile(skillFile(repo, "SKILL.md"), "# hand-edited\n");
-  await rm(skillFile(repo, "reference/format.md"));
+  await writeFile(composeFile(repo, "SKILL.md"), "# hand-edited\n");
+  await rm(composeFile(repo, "reference/format.md"));
 
   const second = await runInit({ path: repo });
 
-  expect(second.skill).toBe("written");
-  expect(await exists(skillFile(repo, "reference/format.md"))).toBe(true);
-  expect(await readFile(skillFile(repo, "SKILL.md"), "utf-8")).toBe("# hand-edited\n");
+  expect(outcomeOf(second, COMPOSE_SKILL.name)).toBe("written");
+  expect(await exists(composeFile(repo, "reference/format.md"))).toBe(true);
+  expect(await readFile(composeFile(repo, "SKILL.md"), "utf-8")).toBe("# hand-edited\n");
 });
 
-test("workspace mode installs the skill at the workspace root", async () => {
+test("workspace mode installs the skills at the workspace root", async () => {
   const ws = resolve(root, "work");
   await mkdir(resolve(ws, ".claude"), { recursive: true });
   const web = await makeRepo("work", "web");
@@ -295,28 +323,51 @@ test("workspace mode installs the skill at the workspace root", async () => {
   const result = await runInit({ path: ws });
 
   expect(result.mode).toBe("workspace");
-  expect(result.skill).toBe("written");
-  expect(await exists(skillFile(ws, "SKILL.md"))).toBe(true);
+  expect(outcomeOf(result, COMPOSE_SKILL.name)).toBe("written");
+  expect(await exists(composeFile(ws, "SKILL.md"))).toBe(true);
   // Child repos are left alone — you init each one separately.
-  expect(await exists(skillFile(web, "SKILL.md"))).toBe(false);
+  expect(await exists(composeFile(web, "SKILL.md"))).toBe(false);
+});
+
+test("every phase in the pipeline ships a skill", async () => {
+  const names = (await shippedSkills()).map((s) => s.name);
+
+  // A phase added without one would otherwise fail at run time, in the middle of a
+  // run, rather than here.
+  for (const def of PHASES) {
+    expect(names).toContain(phaseSkillName(def.id));
+  }
 });
 
 test("every shipped skill asset resolves and carries skill frontmatter", async () => {
-  expect(SKILL_FILES.length).toBeGreaterThan(0);
+  const skills = await shippedSkills();
+  expect(skills.length).toBeGreaterThan(PHASES.length);
 
-  for (const asset of SKILL_FILES) {
-    const file = Bun.file(asset.source);
-    expect(await file.exists()).toBe(true);
-    const text = await file.text();
-    expect(text.trim().length).toBeGreaterThan(0);
+  for (const skill of skills) {
+    for (const asset of skill.files) {
+      const file = Bun.file(asset.source);
+      expect(await file.exists()).toBe(true);
+      expect((await file.text()).trim().length).toBeGreaterThan(0);
+    }
+
+    const skillMd = skill.files.find((a) => a.rel === "SKILL.md");
+    expect(skillMd).toBeDefined();
+
+    const [, frontmatter] = (await Bun.file(skillMd!.source).text()).split("---\n");
+    expect(frontmatter).toContain(`name: ${skill.name}`);
+    expect(frontmatter).toContain("description:");
   }
+});
 
-  const skillMd = SKILL_FILES.find((a) => a.rel === "SKILL.md");
-  expect(skillMd).toBeDefined();
-
-  const [, frontmatter] = (await Bun.file(skillMd!.source).text()).split("---\n");
-  expect(frontmatter).toContain(`name: ${SKILL_NAME}`);
-  expect(frontmatter).toContain("description:");
+test("phase skills never auto-invoke", async () => {
+  // A phase is chosen by the orchestrator, never by a model deciding it looks
+  // relevant — and these sit in the repo, so without this they would surface in the
+  // developer's own sessions too.
+  for (const def of PHASES) {
+    const skill = (await shippedSkills()).find((s) => s.name === phaseSkillName(def.id));
+    const text = await Bun.file(skill!.files[0]!.source).text();
+    expect(text).toContain("disable-model-invocation: true");
+  }
 });
 
 test("repo names needing escapes stay valid TOML", async () => {

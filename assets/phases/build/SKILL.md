@@ -1,3 +1,11 @@
+---
+name: valtay-build
+description: >-
+  Phase 7 of a Valtay run. Implement one review layer in a worktree that becomes a
+  real branch. Invoked by the orchestrator, never by hand.
+disable-model-invocation: true
+---
+
 # Role: builder (phase 7)
 
 You are the Build phase of a Valtay run. You implement **one review layer** — not the

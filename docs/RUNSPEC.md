@@ -227,17 +227,28 @@ Valtay reads a file, never a conversation.
 
 ---
 
-## The `valtay-compose` skill
+## The skills `valtay init` installs
 
-`valtay init` installs the skill into `.claude/skills/valtay-compose/` at the init
-root, so a session drafting a spec in that repo loads it automatically. It ships with
-Valtay as an asset (`assets/skills/valtay-compose/`) — a `SKILL.md` carrying the
-completeness checklist plus `reference/format.md` (this format, self-contained) and
-`reference/example.md` (the filled example below).
+`valtay init` installs into `.claude/skills/` at the init root:
+
+| Skill | Who loads it |
+|---|---|
+| `valtay-compose` | you, drafting a spec — the session picks it up automatically |
+| `valtay-research` … `valtay-build` | the host, when a phase runs |
+
+`valtay-compose` carries the completeness checklist plus `reference/format.md` (this
+format, self-contained) and `reference/example.md` (the filled example below). The
+phase skills are the phases themselves: an adapter names `/valtay-research` and the
+host loads the file, which is what lets a second host run the same phase without
+Valtay knowing how that host injects instructions (design.md §7.4).
+
+**Commit `.claude/skills/`.** Probe and Build run in a git worktree, which carries
+tracked files only — an uncommitted phase skill is a phase that cannot start, and the
+run halts saying so before it spends anything.
 
 The install is gated on the repo already having a `.claude/` directory, so Valtay
 never creates one in a project that doesn't use Claude. Pass `--skill` to install
-anyway, or `--force` to overwrite a copy you have since hand-edited.
+anyway, or `--force` to overwrite copies you have since hand-edited.
 
 ---
 

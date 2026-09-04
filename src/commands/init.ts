@@ -1,7 +1,12 @@
 import { resolve } from "path";
 import { readdir } from "node:fs/promises";
 import { detectHosts, detectMarkers, findRepoRoot, pathExists, type HostSpec } from "../detect.ts";
-import { SKILL_FILES, SKILL_REL_DIR } from "../skills.ts";
+import {
+  installSkills,
+  shippedSkills,
+  HOST_SKILL_ROOTS,
+  type InstalledSkill,
+} from "../skills.ts";
 
 export interface InitOptions {
   /** Target directory. Defaults to the process working directory. */
@@ -10,7 +15,7 @@ export interface InitOptions {
   force?: boolean;
   /** Force workspace mode even if the target sits inside a repo. */
   workspace?: boolean;
-  /** Install the valtay-compose skill even without a .claude/ directory. */
+  /** Install the skills even without a .claude/ directory. */
   skill?: boolean;
 }
 
@@ -19,6 +24,9 @@ export type Outcome = "written" | "skipped";
 
 /** `absent` means the root carries no `.claude/`, so nothing was installed. */
 export type SkillOutcome = Outcome | "absent";
+
+/** An installed skill, or one `init` left alone because the root carries no `.claude/`. */
+export type SkillReport = Omit<InstalledSkill, "outcome"> & { outcome: SkillOutcome };
 
 export interface InitResult {
   mode: Mode;
@@ -31,8 +39,10 @@ export interface InitResult {
   config: Outcome;
   gitignorePath: string;
   gitignore: Outcome;
-  skillDir: string;
-  skill: SkillOutcome;
+  /** The directory the skills were installed under, whether or not any were. */
+  skillsDir: string;
+  /** One entry per shipped skill: valtay-compose, then one per phase. */
+  skills: SkillReport[];
 }
 
 /** Immediate subdirectories of `dir` that are themselves repos, sorted. */
@@ -136,32 +146,26 @@ async function writeUnlessPresent(
 }
 
 /**
- * Copies the valtay-compose skill into `<root>/.claude/skills/`.
+ * Installs the shipped skills into `<root>/.claude/skills/`.
  *
  * Gated on the `.claude/` marker rather than on the detected hosts, because
  * `detectHosts` falls back to claude-code for every repo and so would install into
- * codex-only projects too. Per-file skipping means a hand-edited SKILL.md survives a
- * re-init while a newly shipped reference file still lands.
+ * codex-only projects too. The copying itself lives in `skills.ts`, so a test fixture
+ * that needs a repo the phases can actually run in uses the same code path.
  */
-async function installSkill(
+async function installSkillsIfInScope(
   root: string,
-  dir: string,
+  skillsDir: string,
   options: InitOptions
-): Promise<SkillOutcome> {
+): Promise<SkillReport[]> {
   const hasClaude = (await detectMarkers(root)).includes(".claude/");
-  if (!hasClaude && options.skill !== true) return "absent";
 
-  // Sequential: the assets share parent directories, and Bun.write creates them.
-  let wrote = false;
-  for (const asset of SKILL_FILES) {
-    const outcome = await writeUnlessPresent(
-      resolve(dir, asset.rel),
-      Bun.file(asset.source),
-      options.force === true
-    );
-    if (outcome === "written") wrote = true;
+  if (!hasClaude && options.skill !== true) {
+    const skills = await shippedSkills();
+    return skills.map((s) => ({ name: s.name, dir: resolve(skillsDir, s.name), outcome: "absent" }));
   }
-  return wrote ? "written" : "skipped";
+
+  return installSkills(skillsDir, options.force === true);
 }
 
 export async function runInit(options: InitOptions = {}): Promise<InitResult> {
@@ -187,8 +191,8 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
   const gitignorePath = resolve(root, ".valtay", ".gitignore");
   const gitignore = await writeUnlessPresent(gitignorePath, "", false);
 
-  const skillDir = resolve(root, SKILL_REL_DIR);
-  const skill = await installSkill(root, skillDir, options);
+  const skillsDir = resolve(root, HOST_SKILL_ROOTS["claude-code"]!);
+  const skills = await installSkillsIfInScope(root, skillsDir, options);
 
   return {
     mode,
@@ -199,8 +203,8 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
     config,
     gitignorePath,
     gitignore,
-    skillDir,
-    skill,
+    skillsDir,
+    skills,
   };
 }
 
@@ -215,11 +219,17 @@ export function formatInitResult(result: InitResult): string[] {
   lines.push(note(result.config, "valtay.toml"));
   lines.push(note(result.gitignore, ".valtay/.gitignore"));
 
-  const skillName = `${SKILL_REL_DIR}/`;
-  if (result.skill === "absent") {
-    lines.push(`  skipped ${skillName} (no .claude/ — use --skill)`);
+  const skillsName = `${HOST_SKILL_ROOTS["claude-code"]}/`;
+  const written = result.skills.filter((s) => s.outcome === "written");
+  const present = result.skills.filter((s) => s.outcome === "skipped");
+
+  if (result.skills.every((s) => s.outcome === "absent")) {
+    lines.push(`  skipped ${skillsName} (no .claude/ — use --skill)`);
+  } else if (written.length === 0) {
+    lines.push(`  skipped ${skillsName} (${present.length} skills already present)`);
   } else {
-    lines.push(note(result.skill, skillName));
+    const already = present.length > 0 ? `, ${present.length} already present` : "";
+    lines.push(`  wrote   ${skillsName} (${written.length} skills${already})`);
   }
 
   if (result.mode === "workspace") {
@@ -231,6 +241,11 @@ export function formatInitResult(result: InitResult): string[] {
   }
   lines.push(`  hosts   ${result.hosts.map((h) => h.name).join(", ")}`);
 
+  if (written.length > 0) {
+    // Not a style preference: Probe and Build run in a git worktree, which carries
+    // tracked files only. An uncommitted phase skill is a phase that cannot start.
+    lines.push(`Commit ${skillsName} — a write phase runs in a worktree and only sees tracked files.`);
+  }
   if (result.config === "skipped") {
     lines.push("Re-run with --force to overwrite valtay.toml.");
   }

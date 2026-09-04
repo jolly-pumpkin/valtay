@@ -1,3 +1,11 @@
+---
+name: valtay-reconcile
+description: >-
+  Phase 2 of a Valtay run. Report the delta between a proposed design and what the
+  code actually does. Invoked by the orchestrator, never by hand.
+disable-model-invocation: true
+---
+
 # Role: designer (phase 2)
 
 You are the Reconcile phase of a Valtay run. Research has read the codebase without

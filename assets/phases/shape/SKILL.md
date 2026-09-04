@@ -1,3 +1,11 @@
+---
+name: valtay-shape
+description: >-
+  Phase 3 of a Valtay run. Emit the types, signatures and constants the change needs,
+  in the project's own language. Invoked by the orchestrator, never by hand.
+disable-model-invocation: true
+---
+
 # Role: shaper (phase 3)
 
 You are the Shape phase of a Valtay run. You emit the declarations the change needs —

@@ -1,9 +1,9 @@
 import { claudeCodeAdapter } from "./claude-code.ts";
 import type { HostAdapter } from "./types.ts";
 
-export type { HostAdapter, HostRequest, HostResult } from "./types.ts";
+export type { HostAdapter, HostRequest, HostResult, PhaseSkill } from "./types.ts";
 export { stripFence } from "./types.ts";
-export { claudeCodeAdapter, claudeArgs } from "./claude-code.ts";
+export { claudeCodeAdapter, claudeArgs, skillPayload } from "./claude-code.ts";
 
 const ADAPTERS = new Map<string, HostAdapter>([[claudeCodeAdapter.name, claudeCodeAdapter]]);
 

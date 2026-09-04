@@ -1,6 +1,6 @@
 import { adapterFor } from "../hosts/index.ts";
-import type { HostRequest } from "../hosts/types.ts";
-import { loadPrompt } from "../prompts.ts";
+import type { HostRequest, PhaseSkill } from "../hosts/types.ts";
+import { installedSkillPath, phaseSkillName, skillRelDir } from "../skills.ts";
 import { researchInput, sha256, section, type Runspec } from "../runspec.ts";
 import type { ResolvedConfig, RoleBinding } from "../config.ts";
 import type { HostResult } from "../hosts/types.ts";
@@ -16,6 +16,7 @@ import {
   writeArtifact,
   type ArtifactRef,
   type ManifestRecord,
+  type PhaseId,
   type Run,
 } from "./store.ts";
 
@@ -37,6 +38,7 @@ export interface PhaseOutcome {
 export interface InvocationRecord {
   def: PhaseDef;
   binding: RoleBinding;
+  skill: PhaseSkill;
   promptSha: string;
   inputs: ArtifactRef[];
   outputs: ArtifactRef[];
@@ -62,6 +64,7 @@ export function manifestRecord(record: InvocationRecord): ManifestRecord {
     host: binding.host,
     model: binding.model,
     ...(binding.effort ? { effort: binding.effort } : {}),
+    skill: record.skill.name,
     prompt_sha: record.promptSha,
     inputs: record.inputs,
     outputs: record.outputs,
@@ -263,6 +266,40 @@ async function reviewerCorrection(run: Run, def: PhaseDef): Promise<string> {
   return `# Correction from your reviewer\n\nThey rejected the previous ${outputPath(def, run.meta.repo)}:\n\n${rejection.reason}\n`;
 }
 
+export type SkillLookup =
+  | { ok: true; skill: PhaseSkill; sha: string }
+  | { ok: false; error: string };
+
+/**
+ * Finds the phase's skill where the host will look for it, before anything is spawned.
+ *
+ * A host that cannot find the skill does not say so. It answers the payload
+ * conversationally, with none of the phase's rules and none of its output contract —
+ * an invocation billed in full to discover a setup mistake. So the absence is checked
+ * here instead, and the phase fails having made no model call at all.
+ *
+ * `workdir` is the repo for a read-only phase and the worktree for a write one, which
+ * is why `.claude/skills/` has to be committed: a worktree carries tracked files only.
+ *
+ * The hash is of the file as found rather than of the shipped asset, so a hand-edited
+ * phase skill is distinguishable in the manifest from the one Valtay ships.
+ */
+export async function phaseSkillIn(workdir: string, id: PhaseId): Promise<SkillLookup> {
+  const path = installedSkillPath(workdir, id);
+  const file = Bun.file(path);
+
+  if (!(await file.exists())) {
+    return {
+      ok: false,
+      error:
+        `no ${skillRelDir(phaseSkillName(id))}/SKILL.md in ${workdir} — ` +
+        "run `valtay init` and commit .claude/skills/",
+    };
+  }
+
+  return { ok: true, skill: { name: phaseSkillName(id), path }, sha: sha256(await file.text()) };
+}
+
 /**
  * Runs one phase, with design.md §18's retry policy.
  *
@@ -276,7 +313,6 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
   const host = run.meta.config.hosts[binding.host];
   if (!host) throw new Error(`Role ${def.role} is bound to unknown host ${binding.host}`);
 
-  const prompt = await loadPrompt(def.id);
   const inputs = await inputsFor(run, spec, def);
   const output = outputPath(def, run.meta.repo);
 
@@ -290,21 +326,26 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
     await createWorktree(run.meta.repo, workdir, `valtay/${run.meta.run}/${def.id}`);
   }
 
-  const base: HostRequest = {
-    binding,
-    host,
-    prompt,
-    input: payload,
-    workdir,
-    readDirs: [run.dir],
-    write: def.write,
-    timeout_ms: binding.timeout_ms,
-  };
-
   let correction = "";
   let lastError = "unknown failure";
 
   try {
+    // Inside the try so a write phase's worktree is still cleaned up when the phase
+    // never starts. Zero attempts is the honest count: nothing was invoked.
+    const found = await phaseSkillIn(workdir, def.id);
+    if (!found.ok) return { ok: false, error: found.error, attempts: 0 };
+
+    const base: HostRequest = {
+      binding,
+      host,
+      skill: found.skill,
+      input: payload,
+      workdir,
+      readDirs: [run.dir],
+      write: def.write,
+      timeout_ms: binding.timeout_ms,
+    };
+
     for (let attempt = 1; attempt <= 2; attempt++) {
       const request = correction ? { ...base, input: `${base.input}\n${correction}` } : base;
       const result = await adapterFor(host.adapter).run(request);
@@ -320,7 +361,8 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
         manifestRecord({
           def,
           binding,
-          promptSha: sha256(prompt),
+          skill: found.skill,
+          promptSha: found.sha,
           inputs: inputs.flatMap((i) => (i.ref ? [i.ref] : [])),
           outputs: ref ? [ref] : [],
           result,
