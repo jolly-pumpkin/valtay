@@ -25,7 +25,6 @@ import {
 
 let root: string;
 let repo: string;
-const savedHome = process.env["VALTAY_HOME"];
 
 const SPEC = `---
 run: demo
@@ -47,12 +46,9 @@ beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "valtay-store-"));
   repo = resolve(root, "myrepo");
   await mkdir(resolve(repo, ".git"), { recursive: true });
-  process.env["VALTAY_HOME"] = resolve(root, "home");
 });
 
 afterEach(async () => {
-  if (savedHome === undefined) delete process.env["VALTAY_HOME"];
-  else process.env["VALTAY_HOME"] = savedHome;
   await rm(root, { recursive: true, force: true });
 });
 

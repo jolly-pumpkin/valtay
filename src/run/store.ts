@@ -1,8 +1,8 @@
-import { resolve, basename, dirname } from "path";
+import { resolve, dirname } from "path";
 import { appendFile, mkdir, readdir } from "node:fs/promises";
 import { pathExists } from "../detect.ts";
 import { sha256, type Runspec } from "../runspec.ts";
-import { valtayHome, vendorDiversity, type ResolvedConfig } from "../config.ts";
+import { vendorDiversity, type ResolvedConfig } from "../config.ts";
 
 export type PhaseId = "research" | "reconcile" | "shape" | "plan" | "probe" | "build";
 export type GateId = "G1" | "G2" | "G3" | "G4" | "G5" | "G6";
@@ -88,13 +88,9 @@ export interface Run {
   meta: RunMeta;
 }
 
-export function runsRoot(): string {
-  return resolve(valtayHome(), "runs");
-}
-
-/** `~/.valtay/runs/<repo-name>/<run-name>` (design.md §4.1). */
+/** `<repoRoot>/.valtay/runs/<run-name>`. */
 export function runDir(repoRoot: string, name: string): string {
-  return resolve(runsRoot(), basename(repoRoot), name);
+  return resolve(repoRoot, ".valtay", "runs", name);
 }
 
 export function artifactPath(run: Run, rel: string): string {
@@ -168,7 +164,7 @@ export async function loadRun(dir: string): Promise<Run> {
 export async function findRun(repoRoot: string, name?: string): Promise<Run> {
   if (name) return loadRun(runDir(repoRoot, name));
 
-  const parent = resolve(runsRoot(), basename(repoRoot));
+  const parent = resolve(repoRoot, ".valtay", "runs");
   let entries: string[];
   try {
     entries = (await readdir(parent, { withFileTypes: true }))

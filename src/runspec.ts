@@ -138,7 +138,7 @@ export function unresolvedConflicts(spec: Runspec): string[] {
   return conflicts
     .split(/\n(?=\s*[-*]\s)/)
     .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0 && /UNRESOLVED/i.test(entry));
+    .filter((entry) => /^\s*[-*]\s/.test(entry) && /UNRESOLVED/i.test(entry));
 }
 
 /** Sections that are missing or still carry a scaffolded `TODO` marker. */

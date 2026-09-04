@@ -65,7 +65,7 @@ async function startRun(responses: Array<string | { error: string }>) {
 
   const path = resolve(repo, "runspec.md");
   await writeFile(path, SPEC);
-  const run = await runStart({ spec: path });
+  const run = await runStart({ spec: path, repo });
   await advance(run);
   return run;
 }

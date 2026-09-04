@@ -219,8 +219,22 @@ run(RoleBinding, prompt_file, input_files, workdir, write: bool)
   -> { stdout, files_written, exit_code, duration, usage? }
 ```
 
-One shot. No conversation. No session reuse. A host that cannot do this cannot be a
-Valtay host.
+**Two invocation modes.** Both produce the same `HostResult`; they differ in how the
+agent is managed:
+
+| Mode | Session | Bootstrap cost | Course correction | Human takeover |
+|---|---|---|---|---|
+| **Headless** (`-p`) | One-shot, exits after | ~50K tokens each time | Kill and re-spawn | Not possible |
+| **Native** (tmux) | Persistent, stays alive | Once at session start | Follow-up prompt in same context | `tmux attach` |
+
+**Headless** is the default and the only mode the attended CLI uses today. A host
+that cannot do headless one-shots cannot be a Valtay host.
+
+**Native** is the daemon's preferred mode (§18.1). The CLI binary runs in a tmux
+window; the daemon delivers prompts via a file-based inbox and polls for artifacts on
+disk. The agent keeps its full feature set: context compaction, subagents, hooks,
+skills, CLAUDE.md. The human can attach to the tmux window at any time to watch or
+intervene. Falls back to headless when tmux is unavailable.
 
 **Capability declaration** — adapters declare what they support; absent capabilities
 degrade explicitly:
@@ -748,6 +762,10 @@ Same code path, one policy flag.
 - **Attended** — runs deep, you clear gates as you go.
 - **Unattended** — runs *wide*: every unit advances to its first unpassable gate, then
   parks. You return to N units queued at gates and clear them in one sitting.
+- **Daemon** — unattended with a process supervisor (§18.1). Each phase runs in a
+  persistent tmux window. Budget gates (G3, G5) auto-pass when their predicate is
+  green; judgment gates (G4, G6) always halt. The human attaches to review and
+  approve, or to take over a halted phase.
 
 ---
 
@@ -1071,8 +1089,33 @@ output present but schema-invalid
 - **Never auto-advance past a gate on retry success.**
 - **Halt the unit, not the run.** Other units continue.
 
-State lives entirely on disk; there is no daemon holding it. "Resume" and "run on
-another machine" are the same operation.
+State lives entirely on disk. "Resume" and "run on another machine" are the same
+operation — the daemon is stateless and reconstructs its position from artifacts.
+
+### 18.1 Daemon
+
+A background process that picks up approved runspecs and builds them unattended.
+Green runs flow through without stopping. See `docs/DAEMON.md` for the full design.
+
+**Execution model.** Each phase runs in a persistent native CLI session inside its
+own tmux window. tmux is the supervisor, not the execution model — it keeps the
+process alive and lets the human attach. Any CLI binary works: claude, codex, gemini.
+
+**Prompt delivery.** File-based handshake. The daemon writes to an inbox directory;
+the agent's skill watches for it. No stdin piping, no terminal scraping. This is
+host-agnostic — any CLI that reads files can participate.
+
+**Halt classification.** Failures are classified so the daemon knows what it can
+retry on its own:
+
+| Class | Causes | Recovery |
+|---|---|---|
+| `mechanical` | Timeout, bad JSON, crash, rate limit | Auto-retry, pause/resume |
+| `needs-human` | Mandatory gate (G4, G6), drift, repeated failures | Parks, waits for human |
+
+**Invariants.** The daemon never merges (a human always owns that), never edits the
+runspec, never retries `needs-human` halts, and never runs without an approved
+runspec.
 
 ---
 
@@ -1094,9 +1137,13 @@ valtay amend   trace <unit>       # accept drift, re-baseline, recorded
 valtay take <unit> / resume <unit>
 valtay ledger [project|harness]
 valtay calibrate assessor
+valtay daemon start [--run <name>] [--foreground]
+valtay daemon status
+valtay daemon stop
+valtay daemon attach [--phase <id>]
 ```
 
-Nine verbs, no chat. **There is no conversation with the coordinator** — it is a
+Thirteen verbs, no chat. **There is no conversation with the coordinator** — it is a
 program with no model in it. When you disagree, you disagree with an artifact, and
 `reject --to` is how you say so.
 

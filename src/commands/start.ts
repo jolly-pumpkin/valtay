@@ -1,6 +1,6 @@
 import { resolve, dirname, basename } from "path";
-import { findRepoRoot } from "../detect.ts";
-import { resolveConfig } from "../config.ts";
+import { findRepoRoot, pathExists } from "../detect.ts";
+import { valtayHome, resolveConfig } from "../config.ts";
 import { readRunspec, unresolvedConflicts, section, ASSUMPTIONS, type Runspec } from "../runspec.ts";
 import { createRun, type Run } from "../run/store.ts";
 
@@ -60,8 +60,20 @@ function resolveRunName(spec: Runspec, override?: string): string {
  * phase reads it back rather than re-resolving, so editing `valtay.toml` mid-run
  * cannot silently change what a run in flight is doing (design.md §6.2).
  */
+/** If `ref` is a file path, use it; otherwise treat it as a run name. */
+async function resolveSpecPath(ref: string): Promise<string> {
+  const asPath = resolve(ref);
+  if (await pathExists(asPath)) return asPath;
+
+  const byName = resolve(valtayHome(), "runs", ref, "runspec.md");
+  if (await pathExists(byName)) return byName;
+
+  throw new Error(`No spec at "${ref}" and no run named "${ref}" in ${resolve(valtayHome(), "runs")}`);
+}
+
 export async function runStart(options: StartOptions): Promise<Run> {
-  const spec = await readRunspec(resolve(options.spec));
+  const specPath = await resolveSpecPath(options.spec);
+  const spec = await readRunspec(specPath);
   preflight(spec);
 
   const repoRoot = await resolveRepoRoot(spec, options.repo);

@@ -112,8 +112,10 @@ dist
 # TernJS port file
 .tern-port
 
-# Local tickets
-_tickets/
 
 # Docs
 docs/
+
+# Valtay local state
+.valtay/
+valtay.toml

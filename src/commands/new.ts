@@ -1,5 +1,5 @@
 import { resolve } from "path";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync } from "fs";
 
 interface NewArgs {
   name: string;
@@ -100,6 +100,20 @@ TODO: hints for the pipeline, or delete this section
 `;
 }
 
+/**
+ * Walks up from `start` to find the nearest directory containing a `valtay.toml`
+ * (i.e. a valtay-initialized project). Returns null if none is found.
+ */
+function findInitRoot(start: string): string | null {
+  let dir = resolve(start);
+  for (;;) {
+    if (existsSync(resolve(dir, "valtay.toml"))) return dir;
+    const parent = resolve(dir, "..");
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 export function runNew(args: string[]) {
   const parsed = parseArgs(args);
   if (!parsed) {
@@ -107,12 +121,13 @@ export function runNew(args: string[]) {
     process.exit(1);
   }
 
-  const dir = resolve(
-    process.env["HOME"] || "~",
-    ".valtay",
-    "runs",
-    parsed.name
-  );
+  const root = findInitRoot(process.cwd());
+  if (!root) {
+    console.error("No valtay.toml found — run `valtay init` first.");
+    process.exit(1);
+  }
+
+  const dir = resolve(root, ".valtay", "runs", parsed.name);
   mkdirSync(dir, { recursive: true });
   const outPath = resolve(dir, "runspec.md");
 
