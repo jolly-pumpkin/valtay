@@ -1,6 +1,12 @@
 import { adapterFor } from "../hosts/index.ts";
 import type { HostRequest, PhaseSkill } from "../hosts/types.ts";
-import { installedSkillPath, phaseSkillName, skillRelDir } from "../skills.ts";
+import {
+  DEFAULT_ADAPTER,
+  installedSkillPath,
+  phaseSkillName,
+  skillRelDir,
+  skillRootFor,
+} from "../skills.ts";
 import { researchInput, sha256, section, type Runspec } from "../runspec.ts";
 import type { ResolvedConfig, RoleBinding } from "../config.ts";
 import type { HostResult } from "../hosts/types.ts";
@@ -284,16 +290,21 @@ export type SkillLookup =
  * The hash is of the file as found rather than of the shipped asset, so a hand-edited
  * phase skill is distinguishable in the manifest from the one Valtay ships.
  */
-export async function phaseSkillIn(workdir: string, id: PhaseId): Promise<SkillLookup> {
-  const path = installedSkillPath(workdir, id);
+export async function phaseSkillIn(
+  workdir: string,
+  id: PhaseId,
+  adapter: string = DEFAULT_ADAPTER
+): Promise<SkillLookup> {
+  const path = installedSkillPath(workdir, id, adapter);
   const file = Bun.file(path);
 
   if (!(await file.exists())) {
+    const dir = skillRelDir(phaseSkillName(id), adapter);
     return {
       ok: false,
       error:
-        `no ${skillRelDir(phaseSkillName(id))}/SKILL.md in ${workdir} — ` +
-        "run `valtay init` and commit .claude/skills/",
+        `no ${dir}/SKILL.md in ${workdir} — ` +
+        `run \`valtay init\` and commit ${skillRootFor(adapter)}/`,
     };
   }
 
@@ -332,7 +343,7 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
   try {
     // Inside the try so a write phase's worktree is still cleaned up when the phase
     // never starts. Zero attempts is the honest count: nothing was invoked.
-    const found = await phaseSkillIn(workdir, def.id);
+    const found = await phaseSkillIn(workdir, def.id, host.adapter);
     if (!found.ok) return { ok: false, error: found.error, attempts: 0 };
 
     const base: HostRequest = {
@@ -367,7 +378,10 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
           outputs: ref ? [ref] : [],
           result,
           attempt,
-          notes: failure ? [failure] : [],
+          // The adapter's own degradations first, then the failure. A dropped
+          // capability is worth recording on a successful attempt too, which is why
+          // this is not gated on `failure`.
+          notes: [...(result.notes ?? []), ...(failure ? [failure] : [])],
         })
       );
 

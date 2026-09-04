@@ -1,11 +1,16 @@
 import { claudeCodeAdapter } from "./claude-code.ts";
+import { codexAdapter } from "./codex.ts";
 import type { HostAdapter } from "./types.ts";
 
 export type { HostAdapter, HostRequest, HostResult, PhaseSkill } from "./types.ts";
 export { stripFence } from "./types.ts";
 export { claudeCodeAdapter, claudeArgs, skillPayload } from "./claude-code.ts";
+export { codexAdapter, codexArgs, codexPayload, parseCodexStream } from "./codex.ts";
 
-const ADAPTERS = new Map<string, HostAdapter>([[claudeCodeAdapter.name, claudeCodeAdapter]]);
+const ADAPTERS = new Map<string, HostAdapter>([
+  [claudeCodeAdapter.name, claudeCodeAdapter],
+  [codexAdapter.name, codexAdapter],
+]);
 
 /**
  * Registers an adapter, replacing any of the same name. Returns a function that

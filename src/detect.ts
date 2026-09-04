@@ -13,7 +13,12 @@ export interface HostSpec {
   adapter: string;
 }
 
-const HOST_BY_MARKER: Record<Marker, HostSpec> = {
+/**
+ * Exported so `skills.ts` can be checked against it: every adapter a repo can be
+ * detected as ends up in `valtay.toml`, and one with no skill root is an init that
+ * produces a config no phase can run under.
+ */
+export const HOST_BY_MARKER: Record<Marker, HostSpec> = {
   ".claude/": { name: "claude-code", bin: "claude", adapter: "claude-code" },
   "codex.json": { name: "codex", bin: "codex", adapter: "codex" },
   ".codex/": { name: "codex", bin: "codex", adapter: "codex" },

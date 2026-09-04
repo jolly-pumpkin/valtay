@@ -129,7 +129,7 @@ export async function runBuild(run: Run, _spec: Runspec): Promise<PhaseOutcome> 
   // Checked once for the whole phase rather than per layer: the worktree does not
   // change under it, and a builder that cannot load its skill would otherwise burn one
   // invocation per layer discovering the same setup mistake.
-  const found = await phaseSkillIn(workdir, def.id);
+  const found = await phaseSkillIn(workdir, def.id, host.adapter);
   if (!found.ok) return { ok: false, error: found.error, attempts: 0 };
 
   const results: LayerResult[] = [];
@@ -165,6 +165,7 @@ export async function runBuild(run: Run, _spec: Runspec): Promise<PhaseOutcome> 
           attempt: 1,
           notes: [
             `layer ${layer.id}`,
+            ...(result.notes ?? []),
             ...(failure ? [failure] : []),
             ...(committed.strayFiles.length > 0
               ? [`wrote outside its declared file set: ${committed.strayFiles.join(", ")}`]

@@ -298,19 +298,79 @@ anything — roughly $0.13 at list on the default model. That is the fixed price
 phase boundary, so a six-phase run starts ~190k tokens in the hole. It is the number
 Q3 (§23) was missing.
 
-**codex**
+**codex** — verified against codex-cli 0.153.3; `src/hosts/codex.ts` builds this.
 
 ```bash
-codex exec -m gpt-5.6-luna -c model_reasoning_effort=max --cd "$WT" \
-  "$(cat "$PROMPT" "$IN")"
+# read-only phase (1-4)
+printf '<skill>\n%s\n</skill>\n\n%s' "$SKILL_BODY" "$PAYLOAD" \
+  | codex exec --json --skip-git-repo-check --model gpt-5.6-luna \
+  --cd "$REPO" --sandbox read-only \
+  --output-last-message "$OUT" -c model_reasoning_effort=high -
+
+# write phase (5, 7), inside the worktree
+printf '<skill>\n%s\n</skill>\n\n%s' "$SKILL_BODY" "$PAYLOAD" \
+  | codex exec --json --skip-git-repo-check --model gpt-5.6-luna \
+  --cd "$WT" --sandbox workspace-write --output-last-message "$OUT" -
 ```
 
 Inline overrides rather than generated `[profiles.*]` blocks: generating profiles
 writes into another tool's config (violating §4.1 installer discipline) and hides the
 effective binding from the call site.
 
-> **Verify before building:** exact `-c` override syntax on `codex exec`, and whether
-> a structured output format exists. 30-minute spike; do it before adapter code.
+Six things the spike settled, three of which changed the design:
+
+- **`-c model_reasoning_effort=<effort>` is the effort mapping, and it is real.**
+  `-c key=value` parses the value as TOML and falls back to a literal string;
+  `--strict-config` accepts `model_reasoning_effort` and rejects a typo of it with
+  "unknown configuration field", and setting it changes the `reasoning effort:` line
+  in codex's own startup banner. `effort` is therefore *not* a degraded capability
+  here, unlike what §7.1's table allows for.
+- **The sandbox is the fence, and it is stricter than the tool allowlist.** Checked
+  with `codex sandbox`: under `read-only` a write fails with "Read-only file system"
+  even inside the working root, and under `workspace-write` a write to the working
+  root's parent fails while one inside it succeeds. Claude denies the write *tools*;
+  codex denies the write *syscall*. `danger-full-access` and
+  `--dangerously-bypass-approvals-and-sandbox` are the analogue of
+  `bypassPermissions` and are not used.
+- **`readDirs` needs no flag.** Reads outside the working root succeed under *both*
+  sandboxes, so the run directory is already legible. `--add-dir` exists but means
+  "additional directories that should be **writable**" — passing it would let a write
+  phase write into the run's own artifacts to buy nothing. Note that codex treats
+  `/tmp` and `$TMPDIR` as writable roots by default, so a worktree under `/tmp` has a
+  wider fence than one elsewhere.
+- **There is no deterministic skill invocation, so the codex adapter inlines the
+  body.** This is the one place codex cannot honor §7.4. A leading `/valtay-research`
+  reaches the model as literal text (the turn's input item is the raw string, with no
+  expansion); naming a skill that does not exist raises nothing; and codex's own
+  skill loading is a lexical *relevance* ranking over the installed catalogue — the
+  binary runs `weighted_lexical_v1`, `fielded_bm25_v1` and friends to guess which
+  skill a prompt is about. A phase chosen by similarity is exactly what the
+  orchestrator exists to prevent. The skill is still installed at
+  `.codex/skills/valtay-<phase>/SKILL.md`, which is where codex's loader reads from:
+  that keeps the pre-flight check honest, keeps `prompt_sha` a hash of a real file,
+  and is where this belongs the day codex grows a deterministic invocation. The
+  substitution is recorded as a manifest note on every invocation.
+- **`--output-last-message` is the artifact; `--json` is the accounting.** `codex
+  exec` prints a human-readable transcript to stdout, so stdout is not the artifact.
+  The file is not written at all when a turn does not complete, which makes its
+  absence a reliable failure signal rather than an empty answer. It is written to the
+  temp directory rather than the working root — a read-only phase runs in the user's
+  own checkout, and a write phase runs in the worktree whose file set Build inspects.
+  `--sandbox` governs the shell commands the model runs, not the CLI's own output
+  file, so this works under `read-only` too. `--json` emits JSONL
+  — `thread.started`, `turn.started`, `item.started`/`item.completed` (item types
+  `agent_message`, `reasoning`, `command_execution`, `error`), then `turn.completed`
+  or `turn.failed` — carrying token usage as `input_tokens`, `output_tokens`,
+  `cached_input_tokens`, `total_tokens`. No per-turn dollar cost, so `cost_usd` is
+  omitted rather than invented.
+- **`codex exec` defaults to `approval: never`,** so a headless phase is never asked
+  to confirm a command and no approval flag is passed. The prompt goes on stdin via a
+  trailing `-`, for the same argv-length reason as claude-code.
+
+> **Not verified:** no OpenAI credentials were available, so no phase has been run
+> end to end against a live model. Everything above is from the binary's own
+> behaviour — argument parsing, config validation, the sandbox, and the startup
+> banner. The first real cross-vendor run is the remaining acceptance step.
 
 ### 7.3 The Codex plugin
 
@@ -334,14 +394,26 @@ Phase instructions ship as `SKILL.md` files (`assets/phases/<id>/SKILL.md`), and
 .claude/skills/valtay-reconcile/SKILL.md  # phase 2, and so on
 ```
 
-An adapter therefore delivers a **name**, not a body. That is the portability
-prerequisite: the codex adapter spawns a different binary rather than reimplementing
-prompt injection, and the same file loads unchanged in the daemon's native sessions
-(§18.1), which have no `--append-system-prompt` hook in the loop.
+The destination follows the host family rather than being fixed — `.claude/skills/`
+for claude-code, `.codex/skills/` for codex (`HOST_SKILL_ROOTS` in `src/skills.ts`).
+A repo carrying both markers gets both, which is what a cross-vendor run needs: the
+phase has to be present wherever the host its role is bound to will look.
+
+An adapter therefore delivers a **name**, not a body, wherever the host can accept
+one. That is the portability prerequisite: the codex adapter spawns a different
+binary rather than reimplementing prompt injection, and the same file loads unchanged
+in the daemon's native sessions (§18.1), which have no `--append-system-prompt` hook
+in the loop.
+
+**Codex is the exception, and it is a host limitation rather than a design change.**
+It has no deterministic way to be handed a skill name (§7.2), so its adapter reads
+the installed file and inlines the body, and says so in the manifest. The file still
+lives where codex's own loader reads it, so the arrangement is one flag away from
+correct the day codex can name a skill.
 
 Three consequences worth stating:
 
-- **`.claude/skills/` must be committed.** Probe and Build run in a git worktree,
+- **The skills directory must be committed.** Probe and Build run in a git worktree,
   which carries tracked files only. An uncommitted phase skill is a phase that cannot
   start there.
 - **A missing skill fails before the model is called.** A host that cannot find the
