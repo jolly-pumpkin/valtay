@@ -10,6 +10,7 @@ import { pathExists } from "../detect.ts";
 import { runBuild } from "./build.ts";
 import { readArtifact, readManifest, writeArtifact, type Run } from "./store.ts";
 import { readRunspec } from "../runspec.ts";
+import { installSkills, phaseSkillName } from "../skills.ts";
 
 let root: string;
 let repo: string;
@@ -107,6 +108,11 @@ beforeEach(async () => {
   repo = resolve(root, "valtay");
   await mkdir(repo, { recursive: true });
   await writeFile(resolve(repo, "package.json"), "{}");
+
+  // Committed, not just written: Build runs in a worktree, which carries tracked
+  // files only, and a builder that cannot load its skill never starts.
+  await installSkills(resolve(repo, ".claude", "skills"));
+
   await git(repo, ["init", "--quiet", "-b", "main"]);
   await git(repo, ["config", "user.email", "test@example.com"]);
   await git(repo, ["config", "user.name", "Test"]);
@@ -154,6 +160,39 @@ describe("runBuild", () => {
 
     // What the probe ran into is the cheapest information a builder gets.
     expect(first).toContain("the greeting had to land before the wiring");
+  });
+
+  test("every layer loads the builder skill out of the worktree", async () => {
+    const adapter = buildingAdapter([{ "greeting.txt": "hello\n" }, { "wire.txt": "wired\n" }]);
+    restore = registerAdapter(adapter);
+    await build(await readyRun());
+
+    // The worktree, not the repo — which is why `.claude/skills/` has to be committed:
+    // a worktree carries tracked files only.
+    for (const call of adapter.calls) {
+      expect(call.skill.name).toBe(phaseSkillName("build"));
+      expect(call.workdir).toBe(worktreePath("demo", "build"));
+      expect(await Bun.file(call.skill.path).exists()).toBe(true);
+    }
+  });
+
+  test("an uncommitted builder skill halts before the first layer", async () => {
+    const adapter = buildingAdapter([{ "greeting.txt": "hello\n" }]);
+    restore = registerAdapter(adapter);
+
+    const run = await readyRun();
+    // Written but never committed is the realistic mistake: the repo has the skill,
+    // the worktree the builder actually runs in does not.
+    await git(repo, ["rm", "-r", "--quiet", "--cached", ".claude"]);
+    await git(repo, ["commit", "--quiet", "-m", "untrack skills"]);
+
+    const outcome = await build(run);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.attempts).toBe(0);
+    expect(outcome.error).toContain("valtay init");
+    // Checked once for the phase, not once per layer.
+    expect(adapter.calls).toHaveLength(0);
   });
 
   test("keeps the worktree, because G6 reads the diff", async () => {

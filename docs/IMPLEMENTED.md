@@ -48,6 +48,16 @@ CLI: `init`, `new`, `check`, `start`, `status`, `show`, `trace`, `approve`,
   a no-op for one developer in one repo.
 - **A second host adapter and the cross-vendor critic.** Only `claude` is installed.
 
+### Built since the first run
+
+- **A phase is a skill.** Phase instructions ship as `assets/phases/<id>/SKILL.md` and
+  `valtay init` installs them into `.claude/skills/`; the adapter names
+  `/valtay-<phase>` instead of injecting the text with `--append-system-prompt`
+  (design.md §7.4). This is the portability prerequisite — the codex adapter now has
+  to spawn a binary, not reimplement prompt delivery. Verified against the binary:
+  `claude -p` does not auto-invoke a skill on relevance, but it does expand a leading
+  `/name` on stdin, and a payload sent without one comes back visibly uninstructed.
+
 ### Where the code knowingly differs from the design
 
 - **The probe's artifact is `probe.json`**, not §8's `probe.md` plus `trace/*.json`.

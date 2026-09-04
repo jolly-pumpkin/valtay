@@ -39,13 +39,14 @@ const WRITE_ALLOW = "Bash Read Write Edit NotebookEdit Glob Grep";
  * provided either through stdin or as a prompt argument". Passing the payload on
  * stdin sidesteps the collision entirely and lifts the argument-length ceiling,
  * which matters once a phase's inputs are several artifacts long.
+ *
+ * The phase's instructions are not an argument either — see `skillPayload`.
  */
 export function claudeArgs(request: HostRequest): string[] {
   const { binding, write, readDirs = [] } = request;
 
   const args = ["-p", "--output-format", "json", "--model", binding.model];
   if (binding.effort) args.push("--effort", binding.effort);
-  args.push("--append-system-prompt", request.prompt);
 
   if (write) {
     // Probe and Build run inside a worktree and need Bash for the project's own
@@ -59,12 +60,31 @@ export function claudeArgs(request: HostRequest): string[] {
   return args;
 }
 
+/**
+ * The stdin payload: the phase's skill named as a slash command, then its inputs.
+ *
+ * Not `--append-system-prompt` with the SKILL.md body. Claude Code discovers skills
+ * under `<workdir>/.claude/skills/`, which `valtay init` installs into, so the host
+ * loads the phase itself and Valtay never has to know how a given host injects
+ * instructions.
+ *
+ * Verified against the binary at 2.1.260: `-p` does **not** auto-invoke a skill on
+ * relevance, but it does expand a leading `/name` — including when the prompt arrives
+ * on stdin rather than as an argument, which is the one thing the docs left open. With
+ * the slash line the phase returns its artifact in the shape its SKILL.md specifies;
+ * the same payload without it comes back visibly uninstructed, which is what the
+ * `leading` validation in `run/invoke.ts` catches.
+ */
+export function skillPayload(request: HostRequest): string {
+  return `/${request.skill.name}\n\n${request.input}`;
+}
+
 async function invoke(request: HostRequest): Promise<HostResult> {
   const started = Bun.nanoseconds();
 
   const proc = Bun.spawn([request.host.bin, ...claudeArgs(request)], {
     cwd: request.workdir,
-    stdin: new TextEncoder().encode(request.input),
+    stdin: new TextEncoder().encode(skillPayload(request)),
     stdout: "pipe",
     stderr: "pipe",
     timeout: request.timeout_ms,

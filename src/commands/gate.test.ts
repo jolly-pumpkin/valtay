@@ -10,6 +10,7 @@ import { createReplayAdapter, type ReplayAdapter } from "../hosts/replay.ts";
 import { registerAdapter } from "../hosts/index.ts";
 import { advance } from "../run/orchestrator.ts";
 import { findRun, readApprovals, readArtifact, readState } from "../run/store.ts";
+import { installSkills } from "../skills.ts";
 
 let root: string;
 let repo: string;
@@ -75,6 +76,8 @@ beforeEach(async () => {
   repo = resolve(root, "valtay");
   await mkdir(resolve(repo, ".git"), { recursive: true });
   await writeFile(resolve(repo, "package.json"), "{}");
+  // Every phase reachable from a gate loads its skill from the repo it runs in.
+  await installSkills(resolve(repo, ".claude", "skills"));
   process.env["VALTAY_HOME"] = resolve(root, "home");
   restore = () => {};
 });

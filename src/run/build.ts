@@ -1,10 +1,9 @@
 import { adapterFor } from "../hosts/index.ts";
-import { loadPrompt } from "../prompts.ts";
-import { sha256, type Runspec } from "../runspec.ts";
+import { type Runspec } from "../runspec.ts";
 import type { Plan, ReleaseUnit, ReviewLayer } from "../plan.ts";
 import type { ProbeResult } from "../trace.ts";
 import { createWorktree, git, worktreePath } from "../worktree.ts";
-import { manifestRecord, type PhaseOutcome } from "./invoke.ts";
+import { manifestRecord, phaseSkillIn, type PhaseOutcome } from "./invoke.ts";
 import { outputPath, phase } from "./phases.ts";
 import { appendManifest, readArtifact, writeArtifact, type Run } from "./store.ts";
 
@@ -118,8 +117,6 @@ export async function runBuild(run: Run, _spec: Runspec): Promise<PhaseOutcome> 
   const probe = JSON.parse(probeText) as ProbeResult;
   const shape = (await readArtifact(run, outputPath(phase("shape"), run.meta.repo))) ?? "";
 
-  const prompt = await loadPrompt(def.id);
-  const promptSha = sha256(prompt);
   const workdir = worktreePath(run.meta.run, "build");
   const branch = `valtay/${run.meta.run}/build`;
 
@@ -128,6 +125,12 @@ export async function runBuild(run: Run, _spec: Runspec): Promise<PhaseOutcome> 
   // the last merge rather than the two the build actually made.
   const base = (await git(run.meta.repo, ["rev-parse", "HEAD"])).stdout;
   await createWorktree(run.meta.repo, workdir, branch);
+
+  // Checked once for the whole phase rather than per layer: the worktree does not
+  // change under it, and a builder that cannot load its skill would otherwise burn one
+  // invocation per layer discovering the same setup mistake.
+  const found = await phaseSkillIn(workdir, def.id);
+  if (!found.ok) return { ok: false, error: found.error, attempts: 0 };
 
   const results: LayerResult[] = [];
   const checkpoints: CheckpointResult[] = [];
@@ -138,7 +141,7 @@ export async function runBuild(run: Run, _spec: Runspec): Promise<PhaseOutcome> 
       const result = await adapterFor(host.adapter).run({
         binding,
         host,
-        prompt,
+        skill: found.skill,
         input: layerPayload(unit, layer, shape, probe),
         workdir,
         readDirs: [run.dir],
@@ -154,7 +157,8 @@ export async function runBuild(run: Run, _spec: Runspec): Promise<PhaseOutcome> 
         manifestRecord({
           def,
           binding,
-          promptSha,
+          skill: found.skill,
+          promptSha: found.sha,
           inputs: [],
           outputs: [],
           result,

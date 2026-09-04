@@ -1,3 +1,11 @@
+---
+name: valtay-probe
+description: >-
+  Phase 5 of a Valtay run. Implement the plan in a throwaway worktree, trace what the
+  code actually did, then let it be reverted. Invoked by the orchestrator, never by hand.
+disable-model-invocation: true
+---
+
 # Role: prober (phase 5)
 
 You are the Probe phase of a Valtay run. You implement the approved plan in a

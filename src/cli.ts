@@ -32,7 +32,7 @@ program
   .option("--path <path>", "target directory", ".")
   .option("--force", "overwrite an existing valtay.toml")
   .option("--workspace", "treat the target as a directory of repos")
-  .option("--skill", "install the valtay-compose skill even without a .claude/ directory")
+  .option("--skill", "install the skills even without a .claude/ directory")
   .action((opts) => report(async () => formatInitResult(await runInit(opts))));
 
 program

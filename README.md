@@ -13,7 +13,7 @@ hashes, an append-only manifest, and an orchestrator that contains no model.
 bun install
 bun link                                    # puts `valtay` on PATH
 
-valtay init                                 # valtay.toml + .valtay/ + the compose skill
+valtay init                                 # valtay.toml + .valtay/ + the skills (commit them)
 valtay new my-change --repo . --tickets T-1 # scaffold a run spec, no model call
 valtay check runspec.md                     # advisory lint
 valtay start runspec.md                     # Research -> ... -> G1

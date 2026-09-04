@@ -50,6 +50,13 @@ export interface ManifestRecord {
   host: string;
   model: string;
   effort?: string;
+  /** Skill the host was told to load, e.g. `valtay-research`. */
+  skill: string;
+  /**
+   * Hash of the SKILL.md as it sat in the host's working directory — what the host
+   * actually read, so a hand-edited phase skill is visible in the manifest rather
+   * than indistinguishable from the shipped one.
+   */
   prompt_sha: string;
   inputs: ArtifactRef[];
   outputs: ArtifactRef[];

@@ -1,10 +1,24 @@
 import type { HostDef, RoleBinding } from "../config.ts";
 
+/**
+ * The role's standing instructions, as a skill the host loads through its own skill
+ * system rather than a string Valtay injects.
+ *
+ * A phase is a skill: `valtay init` installs it where the host looks, the adapter names
+ * it, and the host reads the file itself. That is what makes a phase portable — the
+ * next adapter spawns a different binary rather than reimplementing prompt injection.
+ */
+export interface PhaseSkill {
+  /** Name the host loads it by, e.g. `valtay-research`. */
+  name: string;
+  /** Absolute path to the SKILL.md the host will read. Inside `workdir`. */
+  path: string;
+}
+
 export interface HostRequest {
   binding: RoleBinding;
   host: HostDef;
-  /** The role's standing instructions — appended to the host's own system prompt. */
-  prompt: string;
+  skill: PhaseSkill;
   /** This invocation's inputs, as one payload. Becomes the user message. */
   input: string;
   /** Working directory. A worktree for write phases, the repo for read-only ones. */
