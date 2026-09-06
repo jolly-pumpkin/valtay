@@ -1,6 +1,6 @@
 # Auto-pass gates — conditional gate evaluation
 
-**Status:** not started
+**Status:** done
 **Priority:** 2 (dogfooding prerequisite)
 
 ## Description

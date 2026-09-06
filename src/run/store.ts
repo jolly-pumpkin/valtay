@@ -72,10 +72,16 @@ export interface ManifestRecord {
 export interface ApprovalRecord {
   ts: string;
   gate: GateId;
-  decision: "approve" | "reject";
+  /**
+   * `auto` is a pre-authorization the human wrote in advance clearing itself
+   * (design.md §12.4). It stands like an approval and is recorded distinctly, because
+   * "nobody read this, a predicate did" is the one fact the log must never lose.
+   */
+  decision: "approve" | "reject" | "auto";
   unit?: string;
   /** Typed rejection: which artifact was wrong (design.md §12.3). */
   to?: string;
+  /** The rejection's correction, or the predicate that cleared an auto-pass. */
   reason?: string;
   /** Every artifact the gate covered, hashed. A later edit voids the approval. */
   artifacts: ArtifactRef[];
@@ -247,9 +253,14 @@ export async function staleArtifacts(run: Run, record: ApprovalRecord): Promise<
   return checked.filter((path): path is string => path !== null);
 }
 
-/** True when `gate` carries a standing approval over unmodified artifacts. */
+/**
+ * True when `gate` carries a standing approval over unmodified artifacts.
+ *
+ * An auto-pass counts. It is bound to the same artifact hashes a human approval is,
+ * so editing what it cleared voids it exactly the same way (design.md §12.3).
+ */
 export async function isApproved(run: Run, gate: GateId): Promise<boolean> {
   const decision = await latestDecision(run, gate);
-  if (!decision || decision.decision !== "approve") return false;
+  if (!decision || decision.decision === "reject") return false;
   return (await staleArtifacts(run, decision)).length === 0;
 }

@@ -1,4 +1,5 @@
 import type { ResolvedConfig } from "./config.ts";
+import type { Scope } from "./gates.ts";
 
 export type TraceSource = "runtime" | "static" | "agent";
 export type NodeStatus = "new" | "changed" | "unchanged";
@@ -64,6 +65,45 @@ const SIGN: Record<NodeStatus, string> = { new: "+", changed: "~", unchanged: "-
 
 function isTable(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** How much a source is worth. An unrecognized one is worth less than any of them. */
+const STRENGTH: Record<string, number> = { agent: 0, static: 1, runtime: 2 };
+const rank = (source: string): number => STRENGTH[source] ?? -1;
+
+/**
+ * Every deviation the probe reported, from both places it can put one.
+ *
+ * `ProbeResult.deviations` and each trace's own list are the same kind of finding
+ * recorded at two altitudes, and a check that reads one of them reads half the answer.
+ */
+export function allDeviations(probe: ProbeResult): Deviation[] {
+  return [...(probe.deviations ?? []), ...(probe.traces ?? []).flatMap((t) => t.deviations ?? [])];
+}
+
+/**
+ * What a G4 pre-authorization predicate measures (design.md §12.4).
+ *
+ * `trace.source` is the *weakest* source across the traces, so `== "runtime"` means
+ * every path was actually executed rather than merely most of them. No traces at all
+ * is the weakest case there is, not a free pass.
+ */
+export function probeMetrics(probe: ProbeResult): Scope {
+  const traces = probe.traces ?? [];
+  const deviations = allDeviations(probe);
+
+  return {
+    "trace.source": traces.reduce<string>(
+      (weakest, trace) => (rank(trace.source) < rank(weakest) ? trace.source : weakest),
+      traces.length > 0 ? "runtime" : "agent"
+    ),
+    deviations: deviations.length,
+    // `severity` is optional and nothing classifies it while Assess is unbuilt, so an
+    // unclassified deviation counts as structural. G4 fails closed or it is not a gate.
+    structural_deviations: deviations.filter(
+      (d) => d.severity !== "cosmetic" && d.severity !== "local"
+    ).length,
+  };
 }
 
 /**

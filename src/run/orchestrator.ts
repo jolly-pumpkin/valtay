@@ -1,8 +1,10 @@
 import { readRunspec, type Runspec } from "../runspec.ts";
+import { autoPass } from "./autopass.ts";
 import { runBuild } from "./build.ts";
 import { runPhase } from "./invoke.ts";
 import { PHASES, nextPhase, outputPath, phase, type PhaseDef } from "./phases.ts";
 import {
+  appendApproval,
   hashArtifact,
   isApproved,
   latestDecision,
@@ -106,21 +108,45 @@ export async function advance(run: Run, spec?: Runspec): Promise<string[]> {
 
     if (def.gate && !(await isApproved(run, def.gate))) {
       const decision = await latestDecision(run, def.gate);
-      const note =
-        decision?.decision === "reject"
-          ? `${def.gate} was rejected to ${decision.to ?? "?"} — re-run that phase first`
-          : undefined;
 
-      await writeState(run, {
-        ...state,
-        status: "awaiting_gate",
-        gate: def.gate,
-        rerun: false,
-        ...(note ? { note } : { note: undefined }),
-      });
+      // A predicate written in advance may clear a budget gate, but never one the
+      // human has already answered by hand: once they have approved or rejected here,
+      // the gate is theirs, and a hand-edit that voids an approval is the intended
+      // workflow (design.md §12.3), not something to quietly re-clear. A previous
+      // auto-pass is no such answer, so edited artifacts get measured again.
+      const auto =
+        decision && decision.decision !== "auto" ? null : await autoPass(run, def.gate);
 
-      lines.push(`  ${def.gate} — review, then \`valtay approve ${def.gate}\``);
-      return lines;
+      if (auto?.passed) {
+        await appendApproval(run, {
+          ts: new Date().toISOString(),
+          gate: def.gate,
+          decision: "auto",
+          reason: auto.predicate,
+          artifacts: await gateArtifacts(run, def),
+        });
+
+        lines.push(`  ${def.gate} auto-passed — ${auto.predicate}`);
+      } else {
+        const note =
+          decision?.decision === "reject"
+            ? `${def.gate} was rejected to ${decision.to ?? "?"} — re-run that phase first`
+            : auto
+              ? `${def.gate} did not auto-pass: ${auto.reason}`
+              : undefined;
+
+        await writeState(run, {
+          ...state,
+          status: "awaiting_gate",
+          gate: def.gate,
+          rerun: false,
+          ...(note ? { note } : { note: undefined }),
+        });
+
+        if (auto) lines.push(`  ${def.gate} did not auto-pass: ${auto.reason}`);
+        lines.push(`  ${def.gate} — review, then \`valtay approve ${def.gate}\``);
+        return lines;
+      }
     }
 
     const next = nextPhase(def.id);

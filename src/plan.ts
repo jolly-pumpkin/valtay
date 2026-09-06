@@ -1,4 +1,5 @@
 import type { ResolvedConfig } from "./config.ts";
+import type { Scope } from "./gates.ts";
 
 /**
  * One PR. 1..n per release unit; when n > 1 they form a stack.
@@ -39,6 +40,34 @@ export interface Plan {
   /** What makes G3 a choice among shapes rather than a rubber stamp (design.md §9.5). */
   alternatives_considered: Array<{ shape: string; rejected: string }>;
   release_plan?: unknown;
+}
+
+/**
+ * What a G3 pre-authorization predicate measures (design.md §12.4).
+ *
+ * Run-total rather than per-unit, because gates operate on the whole run (§12.2) —
+ * `layers` is deliberately the same number `validatePlan` checks against the run
+ * budget, so a predicate and a budget cannot disagree about what they counted.
+ *
+ * `owners` and `flags` are optional and nothing populates them for a single developer
+ * in one repo, so both read zero on a real plan today. That is the honest reading: no
+ * declared owners means no multi-team layer, not an unanswerable question.
+ */
+export function planMetrics(plan: Plan): Scope {
+  const units = plan.release_units ?? [];
+  const layers = units.flatMap((unit) => unit.layers ?? []);
+  const semantic = layers.filter((layer) => layer.kind === "semantic");
+
+  return {
+    layers: layers.length,
+    multiteam_layers: layers.filter((layer) => (layer.owners ?? []).length > 1).length,
+    // Total churn, the way a diffstat counts it. Zero when nothing is semantic.
+    max_semantic_loc: Math.max(
+      0,
+      ...semantic.map((layer) => (layer.est_loc?.add ?? 0) + (layer.est_loc?.del ?? 0))
+    ),
+    new_flags: units.reduce((n, unit) => n + (unit.flags ?? []).length, 0),
+  };
 }
 
 function isTable(value: unknown): value is Record<string, unknown> {

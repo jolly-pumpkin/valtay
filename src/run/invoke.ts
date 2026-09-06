@@ -12,7 +12,7 @@ import type { ResolvedConfig, RoleBinding } from "../config.ts";
 import type { HostResult } from "../hosts/types.ts";
 import { validatePlan } from "../plan.ts";
 import { recordDeviations } from "../ledger.ts";
-import { validateTrace, withLayers, type ProbeResult } from "../trace.ts";
+import { allDeviations, validateTrace, withLayers, type ProbeResult } from "../trace.ts";
 import { createWorktree, removeWorktree, worktreePath } from "../worktree.ts";
 import { outputPath, phase, phaseForArtifact, type PhaseDef } from "./phases.ts";
 import {
@@ -419,6 +419,5 @@ export async function runPhase(run: Run, spec: Runspec, def: PhaseDef): Promise<
  */
 async function recordProbeDeviations(run: Run, stored: string): Promise<void> {
   const result = JSON.parse(stored) as ProbeResult;
-  const fromTraces = result.traces.flatMap((trace) => trace.deviations ?? []);
-  await recordDeviations(run.meta.repo, run.meta.run, [...(result.deviations ?? []), ...fromTraces]);
+  await recordDeviations(run.meta.repo, run.meta.run, allDeviations(result));
 }

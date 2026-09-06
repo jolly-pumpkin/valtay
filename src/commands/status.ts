@@ -45,10 +45,11 @@ async function phaseLines(run: Run, state: RunState): Promise<string[]> {
         note = `${def.gate} rejected -> ${decision.to ?? "?"}`;
       } else {
         const stale = await staleArtifacts(run, decision);
+        const cleared = decision.decision === "auto" ? "auto-passed" : "approved";
         note =
           stale.length > 0
             ? `${def.gate} approval VOID (${stale.join(", ")} edited)`
-            : `${def.gate} approved`;
+            : `${def.gate} ${cleared}`;
       }
     }
 
