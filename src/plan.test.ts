@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { validatePlan } from "./plan.ts";
+import { planMetrics, validatePlan, type Plan } from "./plan.ts";
 import type { ResolvedConfig } from "./config.ts";
 
 const config = {
@@ -107,5 +107,69 @@ describe("run budget", () => {
     expect(validatePlan(plan({ release_units: wide }), config).join(" ")).toContain(
       "15 review layers exceeds the run budget of 12"
     );
+  });
+});
+
+describe("the measurements a G3 predicate reads", () => {
+  const metrics = (over: Record<string, unknown> = {}) => planMetrics(plan(over) as Plan);
+
+  const unit = (id: string, layers: unknown[], over: Record<string, unknown> = {}) => ({
+    id,
+    goal: "g",
+    checkpoint: "bun test",
+    layers,
+    ...over,
+  });
+
+  test("counts layers across the whole run, the number the budget counts", () => {
+    const two = [unit("RU-1", [layer(), layer({ id: "L2" })]), unit("RU-2", [layer({ id: "L3" })])];
+    expect(metrics({ release_units: two })["layers"]).toBe(3);
+  });
+
+  test("a layer is multi-team only when it has more than one owner", () => {
+    const owned = [
+      unit("RU-1", [
+        layer({ id: "L1", owners: ["@core-game"] }),
+        layer({ id: "L2", owners: ["@core-game", "@ui"] }),
+        layer({ id: "L3" }),
+      ]),
+    ];
+    expect(metrics({ release_units: owned })["multiteam_layers"]).toBe(1);
+  });
+
+  test("semantic LOC is total churn, and mechanical layers do not count", () => {
+    // design.md §9.5's shape: a 412/412 rename is mechanical and irrelevant here.
+    const mixed = [
+      unit("RU-1", [
+        layer({ id: "L1", kind: "mechanical", est_loc: { add: 412, del: 412 } }),
+        layer({ id: "L2", est_loc: { add: 84, del: 2 } }),
+        layer({ id: "L3", est_loc: { add: 49, del: 6 } }),
+      ]),
+    ];
+    expect(metrics({ release_units: mixed })["max_semantic_loc"]).toBe(86);
+  });
+
+  test("semantic LOC is zero when the run is all mechanical", () => {
+    const rename = [unit("RU-1", [layer({ kind: "mechanical" })])];
+    expect(metrics({ release_units: rename })["max_semantic_loc"]).toBe(0);
+  });
+
+  test("flags are totalled across units", () => {
+    const flagged = [
+      unit("RU-1", [layer()], { flags: ["player_damage_enabled"] }),
+      unit("RU-2", [layer({ id: "L2" })], { flags: ["hud_v2", "telemetry"] }),
+    ];
+    expect(metrics({ release_units: flagged })["new_flags"]).toBe(3);
+  });
+
+  // `owners` and `flags` are optional and nothing populates them for one developer in
+  // one repo. Absent means none, not unanswerable — otherwise no plan ever auto-passes.
+  test("absent owners and flags read as zero", () => {
+    expect(metrics()).toEqual({
+      layers: 1,
+      multiteam_layers: 0,
+      max_semantic_loc: 42,
+      new_flags: 0,
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { resolve } from "path";
 import { homedir } from "os";
 import { pathExists } from "./detect.ts";
+import { checkPredicate } from "./gates.ts";
 import type { Runspec } from "./runspec.ts";
 
 /**
@@ -199,6 +200,35 @@ function resolveTrace(sources: Record<string, unknown>[]): ResolvedConfig["trace
 }
 
 /**
+ * Gate pre-authorization predicates, checked rather than trusted.
+ *
+ * Every failure here is one a human can only have made by hand, so it belongs at
+ * `valtay start` while they are still watching — not four phases later at a gate that
+ * quietly refuses to open. An ineligible gate, an unknown gate, an unparseable
+ * expression and a mistyped variable all stop the run before it begins.
+ */
+function resolveGates(sources: Record<string, unknown>[]): ResolvedConfig["gates"] {
+  const merged = overlay(...sources.map((s) => table(s, "gates")));
+
+  const gates: ResolvedConfig["gates"] = {};
+  for (const [name, def] of Object.entries(merged)) {
+    if (!isTable(def)) continue;
+
+    const predicate = def["auto_pass_if"];
+    if (predicate === undefined) continue;
+    if (typeof predicate !== "string") {
+      throw new Error(`${name} auto_pass_if must be a string, not ${typeof predicate}`);
+    }
+
+    const gate = name.trim().toUpperCase();
+    checkPredicate(gate, predicate);
+    gates[gate] = { auto_pass_if: predicate };
+  }
+
+  return gates;
+}
+
+/**
  * Merges every config source into one frozen binding set.
  *
  * Precedence, most specific first (design.md §20):
@@ -226,7 +256,7 @@ export async function resolveConfig(
     layers: overlay(...sources.map((s) => table(s, "layers"))) as Record<string, string>,
     run: resolveRun(sources),
     probe: { promote: table(sources.at(-1) ?? {}, "probe")["promote"] === true },
-    gates: overlay(...sources.map((s) => table(s, "gates"))) as ResolvedConfig["gates"],
+    gates: resolveGates(sources),
   };
 }
 

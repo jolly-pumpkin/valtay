@@ -1,11 +1,14 @@
 import { test, expect, describe } from "bun:test";
 import {
+  allDeviations,
   executionOrder,
   layerFor,
+  probeMetrics,
   renderTrace,
   renderTree,
   validateTrace,
   withLayers,
+  type ProbeResult,
   type Trace,
 } from "./trace.ts";
 import type { ResolvedConfig } from "./config.ts";
@@ -162,5 +165,61 @@ describe("validation", () => {
 
   test("rejects a trace with no nodes at all", () => {
     expect(validateTrace(trace({ nodes: [] }), config)).toContain("no nodes");
+  });
+});
+
+describe("the measurements a G4 predicate reads", () => {
+  const probe = (over: Partial<ProbeResult> = {}): ProbeResult => ({
+    traces: [trace({ source: "runtime" })],
+    deviations: [],
+    ...over,
+  });
+
+  test("reports the source when every trace agrees", () => {
+    expect(probeMetrics(probe())["trace.source"]).toBe("runtime");
+  });
+
+  // §12.4 wants `trace.source == "runtime"` to mean every path was executed, not most
+  // of them, so the weakest trace in the set is the one that answers.
+  test("reports the weakest source when they disagree", () => {
+    const mixed = probe({ traces: [trace({ source: "runtime" }), trace({ source: "static" })] });
+    expect(probeMetrics(mixed)["trace.source"]).toBe("static");
+  });
+
+  test("no traces is the weakest case there is, not a free pass", () => {
+    expect(probeMetrics(probe({ traces: [] }))["trace.source"]).toBe("agent");
+  });
+
+  test("an unrecognized source is weaker than any real one", () => {
+    const bogus = probe({ traces: [trace({ source: "vibes" as never })] });
+    expect(probeMetrics(bogus)["trace.source"]).toBe("vibes");
+  });
+
+  test("counts deviations from the probe and from the traces alike", () => {
+    const both = probe({
+      deviations: [{ kind: "k", detail: "top-level", severity: "local" }],
+      traces: [trace({ source: "runtime", deviations: [{ kind: "k", detail: "in-trace", severity: "local" }] })],
+    });
+
+    expect(probeMetrics(both)["deviations"]).toBe(2);
+    expect(allDeviations(both).map((d) => d.detail)).toEqual(["top-level", "in-trace"]);
+  });
+
+  test("only an explicit cosmetic or local is non-structural", () => {
+    const graded = probe({
+      deviations: [
+        { kind: "k", detail: "a", severity: "cosmetic" },
+        { kind: "k", detail: "b", severity: "local" },
+        { kind: "k", detail: "c", severity: "structural" },
+      ],
+    });
+    expect(probeMetrics(graded)["structural_deviations"]).toBe(1);
+  });
+
+  // Nothing classifies severity while Assess is unbuilt, so unclassified is the common
+  // case. Treating it as harmless would auto-pass G4 on findings nobody has read.
+  test("an unclassified deviation counts as structural", () => {
+    const raw = probe({ deviations: [{ kind: "k", detail: "unread" }] });
+    expect(probeMetrics(raw)["structural_deviations"]).toBe(1);
   });
 });

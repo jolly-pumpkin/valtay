@@ -155,3 +155,61 @@ describe("parseDuration", () => {
     expect(() => parseDuration("soon", 0)).toThrow();
   });
 });
+
+describe("gate pre-authorization", () => {
+  const G3 = "layers <= 4 and multiteam_layers <= 1 and new_flags == 0";
+
+  test("resolves a budget gate's predicate from valtay.toml", async () => {
+    await writeRepoToml(`[gates.G3]\nauto_pass_if = "${G3}"\n`);
+    expect((await resolveConfig(repo)).gates).toEqual({ G3: { auto_pass_if: G3 } });
+  });
+
+  test("takes it from the run spec too, and normalizes the gate's case", async () => {
+    const config = await resolveConfig(repo, spec(`gates:\n  g3: { auto_pass_if: "${G3}" }`));
+    expect(config.gates["G3"]?.auto_pass_if).toBe(G3);
+  });
+
+  test("a spec with no gates section resolves to none", async () => {
+    expect((await resolveConfig(repo, spec("run: demo"))).gates).toEqual({});
+  });
+
+  // design.md §12.4. Failing here means failing at `valtay start`, while the human is
+  // still watching — not four phases later at a gate that quietly refuses to open.
+  test("refuses a predicate on a judgment gate", async () => {
+    for (const gate of ["G1", "G2", "G6"]) {
+      await writeRepoToml(`[gates.${gate}]\nauto_pass_if = "layers <= 4"\n`);
+      await expect(resolveConfig(repo)).rejects.toThrow(/can never be pre-authorized/);
+    }
+  });
+
+  test("refuses G5, which the built pipeline does not have", async () => {
+    await writeRepoToml(`[gates.G5]\nauto_pass_if = "layers <= 4"\n`);
+    await expect(resolveConfig(repo)).rejects.toThrow(/not in the built pipeline/);
+  });
+
+  test("refuses a gate that does not exist", async () => {
+    await writeRepoToml(`[gates.G9]\nauto_pass_if = "layers <= 4"\n`);
+    await expect(resolveConfig(repo)).rejects.toThrow(/No gate G9/);
+  });
+
+  test("refuses an unparseable predicate", async () => {
+    await writeRepoToml(`[gates.G3]\nauto_pass_if = "layers is small"\n`);
+    await expect(resolveConfig(repo)).rejects.toThrow(/Unparseable predicate/);
+  });
+
+  test("refuses a name the gate does not measure", async () => {
+    await writeRepoToml(`[gates.G3]\nauto_pass_if = "nodes <= 4"\n`);
+    await expect(resolveConfig(repo)).rejects.toThrow(/names "nodes"/);
+  });
+
+  test("refuses a predicate that is not a string", async () => {
+    await writeRepoToml(`[gates.G3]\nauto_pass_if = 4\n`);
+    await expect(resolveConfig(repo)).rejects.toThrow(/must be a string/);
+  });
+
+  test("the run spec wins over the repo, as every other section does", async () => {
+    await writeRepoToml(`[gates.G3]\nauto_pass_if = "layers <= 99"\n`);
+    const config = await resolveConfig(repo, spec(`gates:\n  G3: { auto_pass_if: "layers <= 1" }`));
+    expect(config.gates["G3"]?.auto_pass_if).toBe("layers <= 1");
+  });
+});

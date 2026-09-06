@@ -3,6 +3,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { runStart } from "../commands/start.ts";
+import { runReject } from "../commands/gate.ts";
+import { runStatusLines } from "../commands/status.ts";
 import { createReplayAdapter, type ReplayAdapter } from "../hosts/replay.ts";
 import { registerAdapter } from "../hosts/index.ts";
 import { git, worktreePath } from "../worktree.ts";
@@ -14,6 +16,7 @@ import { advance, gateArtifacts, retry } from "./orchestrator.ts";
 import { phase } from "./phases.ts";
 import {
   appendApproval,
+  readApprovals,
   readArtifact,
   readManifest,
   readState,
@@ -118,15 +121,15 @@ const PROBE = JSON.stringify({
 
 const BUILD = "- Added appendJsonl and switched appendManifest to it.";
 
-async function start(responses: Parameters<typeof createReplayAdapter>[1]): Promise<{
-  run: Run;
-  adapter: ReplayAdapter;
-}> {
+async function start(
+  responses: Parameters<typeof createReplayAdapter>[1],
+  spec = SPEC
+): Promise<{ run: Run; adapter: ReplayAdapter }> {
   const adapter = createReplayAdapter("claude-code", responses);
   restore = registerAdapter(adapter);
 
   const path = resolve(repo, "runspec.md");
-  await writeFile(path, SPEC);
+  await writeFile(path, spec);
   return { run: await runStart({ spec: path, repo }), adapter };
 }
 
@@ -705,5 +708,187 @@ describe("cross-vendor runs", () => {
     // would have found it and burned an invocation discovering the mistake.
     expect(codex.calls).toHaveLength(0);
     expect(lines).toContain(".codex/skills");
+  });
+});
+
+describe("auto-pass", () => {
+  /** The predicate design.md §12.4 writes, minus the clause the fixture cannot vary. */
+  const G3 = "layers <= 4 and multiteam_layers <= 1 and new_flags == 0";
+
+  const specWith = (gates: string) => SPEC.replace("run: demo", `run: demo\ngates:\n${gates}`);
+
+  const withSource = (source: string) => {
+    const probe = JSON.parse(PROBE);
+    return JSON.stringify({ ...probe, traces: probe.traces.map((t: object) => ({ ...t, source })) });
+  };
+
+  const RUNTIME_PROBE = withSource("runtime");
+
+  /** Five layers, so `layers <= 4` fails on it. */
+  const WIDE_PLAN = JSON.stringify({
+    ...JSON.parse(PLAN),
+    release_units: [
+      {
+        ...JSON.parse(PLAN).release_units[0],
+        layers: Array.from({ length: 5 }, (_, i) => ({
+          ...JSON.parse(PLAN).release_units[0].layers[0],
+          id: `L${i + 1}`,
+        })),
+      },
+    ],
+  });
+
+  /** Advances through G1 and G2, which no predicate may ever clear. */
+  async function toPlan(run: Run): Promise<void> {
+    for (const gate of ["G1", "G2"] as const) {
+      await advance(run);
+      await approve(run, gate);
+    }
+  }
+
+  test("clears a budget gate when the plan is inside the predicate", async () => {
+    const { run } = await start(
+      [RESEARCH, DESIGN, SHAPE, PLAN, PROBE],
+      specWith(`  G3: { auto_pass_if: "${G3}" }`)
+    );
+    await toPlan(run);
+    const lines = (await advance(run)).join("\n");
+
+    // The run does not stop to be told what it already measured: it runs the probe in
+    // the same pass and parks at G4, which has no predicate.
+    expect(lines).toContain(`G3 auto-passed — ${G3}`);
+    expect(lines).not.toContain("valtay approve G3");
+    expect((await readState(run)).gate).toBe("G4");
+  });
+
+  test("records who cleared it, over the artifacts it cleared", async () => {
+    const { run } = await start(
+      [RESEARCH, DESIGN, SHAPE, PLAN, PROBE],
+      specWith(`  G3: { auto_pass_if: "${G3}" }`)
+    );
+    await toPlan(run);
+    await advance(run);
+
+    // "Nobody read this, a predicate did" is the fact the log must not lose.
+    const record = (await readApprovals(run)).find((a) => a.gate === "G3")!;
+    expect(record).toMatchObject({ decision: "auto", reason: G3 });
+    expect(record.artifacts.map((a) => a.path)).toContain("plan.json");
+
+    // …nor the status line flatten into "approved".
+    const status = (await runStatusLines({ repo })).join("\n");
+    expect(status).toContain("G1 approved");
+    expect(status).toContain("G3 auto-passed");
+  });
+
+  test("parks at the gate and says which clause failed", async () => {
+    const { run } = await start(
+      [RESEARCH, DESIGN, SHAPE, PLAN],
+      specWith(`  G3: { auto_pass_if: "layers <= 0" }`)
+    );
+    await toPlan(run);
+    const lines = (await advance(run)).join("\n");
+
+    expect(lines).toContain("G3 did not auto-pass: layers <= 0 (actual: 1)");
+    expect(lines).toContain("valtay approve G3");
+
+    const state = await readState(run);
+    expect(state).toMatchObject({ status: "awaiting_gate", gate: "G3" });
+    expect(state.note).toContain("layers <= 0");
+  });
+
+  test("a gate with no predicate blocks the way it always has", async () => {
+    const { run } = await start([RESEARCH, DESIGN, SHAPE, PLAN]);
+    await toPlan(run);
+    const lines = (await advance(run)).join("\n");
+
+    expect(lines).not.toContain("auto-pass");
+    expect((await readState(run)).gate).toBe("G3");
+  });
+
+  test("clears G4 when the traces were run and nothing structural came back", async () => {
+    const { run } = await start(
+      [RESEARCH, DESIGN, SHAPE, PLAN, RUNTIME_PROBE, BUILD],
+      specWith(`  G4: { auto_pass_if: "structural_deviations == 0" }`)
+    );
+    await toPlan(run);
+    await advance(run);
+    await approve(run, "G3");
+    const lines = (await advance(run)).join("\n");
+
+    expect(lines).toContain("G4 auto-passed");
+    expect((await readState(run)).gate).toBe("G6");
+  });
+
+  // design.md §12.4 makes runtime traces a precondition of G4, not a clause the
+  // predicate author has to remember.
+  test("refuses G4 when the traces were not run, whatever the predicate says", async () => {
+    const { run } = await start(
+      [RESEARCH, DESIGN, SHAPE, PLAN, PROBE],
+      specWith(`  G4: { auto_pass_if: "deviations <= 99" }`)
+    );
+    await toPlan(run);
+    await advance(run);
+    await approve(run, "G3");
+    const lines = (await advance(run)).join("\n");
+
+    expect(lines).toContain("G4 needs runtime traces, but the weakest is agent");
+    expect((await readState(run)).gate).toBe("G4");
+  });
+
+  test("refuses G4 on a deviation nobody has classified", async () => {
+    const unread = JSON.stringify({
+      ...JSON.parse(RUNTIME_PROBE),
+      deviations: [{ kind: "signature", detail: "nobody graded this" }],
+    });
+
+    const { run } = await start(
+      [RESEARCH, DESIGN, SHAPE, PLAN, unread],
+      specWith(`  G4: { auto_pass_if: "deviations <= 99" }`)
+    );
+    await toPlan(run);
+    await advance(run);
+    await approve(run, "G3");
+    const lines = (await advance(run)).join("\n");
+
+    expect(lines).toContain("G4 needs zero structural deviations, but there are 1");
+    expect((await readState(run)).gate).toBe("G4");
+  });
+
+  test("a rejected gate stays the human's, even when the predicate still passes", async () => {
+    const { run } = await start(
+      [RESEARCH, DESIGN, SHAPE, PLAN, PROBE, PLAN],
+      specWith(`  G3: { auto_pass_if: "${G3}" }`)
+    );
+    await toPlan(run);
+    await advance(run);
+
+    // The re-planned artifact still satisfies the predicate — but a human said no
+    // here, so the gate is theirs for the rest of the run.
+    const lines = (
+      await runReject({ repo, gate: "G3", to: "plan.json", reason: "wrong seam" })
+    ).join("\n");
+
+    expect(lines).not.toContain("auto-passed");
+    expect(lines).toContain("valtay approve G3");
+    expect((await readState(run)).gate).toBe("G3");
+  });
+
+  // A previous auto-pass is not an answer anybody gave, so re-entry measures again
+  // rather than riding on what the last plan happened to say.
+  test("re-measures an auto-passed gate when the run comes back through it", async () => {
+    const { run } = await start(
+      [RESEARCH, DESIGN, SHAPE, PLAN, PROBE, WIDE_PLAN],
+      specWith(`  G3: { auto_pass_if: "${G3}" }`)
+    );
+    await toPlan(run);
+    await advance(run);
+    expect((await readState(run)).gate).toBe("G4");
+
+    const lines = (
+      await runReject({ repo, gate: "G4", to: "plan.json", reason: "wrong seam" })
+    ).join("\n");
+
+    expect(lines).toContain("G3 did not auto-pass: layers <= 4 (actual: 5)");
+    expect((await readState(run)).gate).toBe("G3");
   });
 });

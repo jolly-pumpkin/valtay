@@ -60,8 +60,9 @@ run_budget:
   max_trace_nodes: 40
 
 gates:
-  # TODO: pre-authorization predicates (G1, G2, G6 can never be pre-authorized)
+  # Pre-authorization predicates. G1, G2 and G6 can never be pre-authorized.
   # G3: { auto_pass_if: "layers <= 4 and multiteam_layers <= 1 and new_flags == 0" }
+  # G4: { auto_pass_if: "deviations == 0" }   # also requires runtime traces
 ---
 
 # ${args.name}
