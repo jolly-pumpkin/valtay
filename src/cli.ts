@@ -9,6 +9,7 @@ import { runApprove, runReject } from "./commands/gate.ts";
 import { runShow } from "./commands/show.ts";
 import { runCheck } from "./commands/check.ts";
 import { runUpgrade, formatUpgradeResult } from "./commands/upgrade.ts";
+import { daemonStart, daemonStatus, daemonStop, daemonAttach } from "./commands/daemon.ts";
 import { advance } from "./run/orchestrator.ts";
 
 const program = new Command()
@@ -111,5 +112,46 @@ program
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
   .action((opts) => report(() => runStatusLines(opts)));
+
+const daemon = program
+  .command("daemon")
+  .description("Unattended pipeline execution via tmux");
+
+daemon
+  .command("start")
+  .description("Launch a tmux session running Claude Code for the pipeline")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((opts) => report(() => daemonStart(opts)));
+
+daemon
+  .command("status")
+  .description("Print daemon state; detects dead tmux sessions")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((opts) => report(() => daemonStatus(opts)));
+
+daemon
+  .command("stop")
+  .description("Kill the tmux session and mark the daemon as halted")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((opts) => report(() => daemonStop(opts)));
+
+daemon
+  .command("attach")
+  .description("Attach to the daemon's tmux session")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action(async (opts) => {
+    try {
+      const { session } = await daemonAttach(opts);
+      const { spawnSync } = await import("child_process");
+      spawnSync("tmux", ["attach", "-t", session], { stdio: "inherit" });
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  });
 
 await program.parseAsync();
