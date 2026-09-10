@@ -1,37 +1,122 @@
 # valtay
 
-A host-agnostic harness that runs coding agents as a gated pipeline of short,
-fresh-context phases, and makes the reviewable artifact an executable call trace
-instead of a wall of prose.
+A harness that runs coding agents as a gated pipeline. You write the design,
+the AI plans, builds, and verifies. If the build drifts from your design, the
+run stops and shows you exactly where.
+
+The orchestrator never spawns agents — it's a state machine watching for
+artifacts on disk. You invoke each phase as a skill in your interactive coding
+session (Claude Code, Codex, etc). The CLI just tracks state and enforces gates.
 
 Named for the Valtay of *Dungeon Crawler Carl* — the relentlessly bureaucratic
-species who administer things nobody asked them to administer. The name is a design
-commitment: gates that will not open without evidence, approvals bound to artifact
-hashes, an append-only manifest, and an orchestrator that contains no model.
+species who administer things nobody asked them to administer.
+
+## How it works
+
+```
+runspec (you) → plan (AI) → build (AI) → verify (AI)
+                                             │
+                                      drift? → STOP, shows you where
+                                      clean? → done
+```
+
+## Quick start
 
 ```bash
 bun install
-bun link                                    # puts `valtay` on PATH
+bun link                          # puts `valtay` on PATH
 
-valtay init                                 # valtay.toml + .valtay/ + the skills (commit them)
-valtay new my-change --repo . --tickets T-1 # scaffold a run spec, no model call
-valtay check runspec.md                     # advisory lint
-valtay start runspec.md                     # Research -> ... -> G1
-
-valtay status                               # where the run stands
-valtay show design                          # read what you are deciding about
-valtay approve G1                           # ...and carry on
-valtay reject G1 "does health persist?" --to design
-valtay trace RU-1                           # the call path, as path:line:col
+valtay init                       # writes valtay.toml + installs skills (commit them)
+valtay new my-change              # scaffold a run spec
+# edit .valtay/runs/my-change/runspec.md — write your design
+valtay start .valtay/runs/my-change/runspec.md
 ```
 
-## Docs
+## The run loop
 
-- **`docs/PRD.md`** — the argument. Why review a path rather than a paragraph.
-- **`docs/design.md`** — the design. Phases, gates, adapters, ledgers, invariants.
-- **`docs/RUNSPEC.md`** — the run spec format, the single input to a run.
-- **`docs/IMPLEMENTED.md`** — what is actually built, and what the first run
-  changed about the design.
+```bash
+# 1. Run the plan skill in your Claude Code session
+#    → it reads your design, writes plan.json to the run dir
+valtay advance                    # CLI sees plan.json, advances to build
 
-Valtay has been used to build Valtay: `src/commands/check.ts` was produced by a
-complete run through all six gates.
+# 2. Run the build skill
+#    → it reads plan.json + your design, implements the code
+valtay advance                    # CLI sees build.md, advances to verify
+
+# 3. Run the verify skill
+#    → it compares what was built against your design
+valtay advance                    # clean? done. drift? parks for your review.
+
+# If drift:
+valtay show verify.json           # see the findings
+valtay approve verify             # accept drift and complete
+valtay reject verify "fix X" --to build   # go back to build
+```
+
+## The run spec
+
+The run spec is a single markdown file — your design, stated precisely enough
+that the AI can plan, build, and verify against it.
+
+```yaml
+---
+run: player-damage
+created: 2026-09-06
+
+host: claude
+model: opus
+effort: high
+
+phases:
+  plan:   { model: sonnet, effort: medium }
+  build:  { model: opus,   effort: high }
+  verify: { model: opus,   effort: high }
+---
+
+# Player takes damage when an enemy leaks
+
+## Design
+
+Enemies that reach the end of the path deal 1 damage to the player.
+
+​```typescript
+interface Player {
+  health: number;      // starts at max_health
+  max_health: number;  // default 20
+}
+
+function applyLeakDamage(player: Player, enemy: Enemy): void;
+​```
+
+## Out of scope
+
+- Death screen
+- Health pickups
+
+## Notes
+
+The game has a JSON mode at ~40k fps — use it for verification.
+```
+
+## CLI commands
+
+| Command | What it does |
+|---|---|
+| `valtay init` | Write config + install skills into the repo |
+| `valtay new <name>` | Scaffold a run spec |
+| `valtay check <spec>` | Advisory lint over a run spec |
+| `valtay start <spec>` | Validate and open a run |
+| `valtay advance` | Check for new artifacts and advance |
+| `valtay status` | Where the run stands, phase by phase |
+| `valtay show <artifact>` | Print an artifact |
+| `valtay approve verify` | Accept drift findings |
+| `valtay reject verify <reason> --to <phase>` | Reject and re-enter |
+
+## Skills
+
+Valtay installs four skills into your coding harness:
+
+- **valtay-compose** — helps you write run specs
+- **valtay-plan** — cuts your design into release units and layers
+- **valtay-build** — implements the plan
+- **valtay-verify** — checks the build against your design for drift
