@@ -98,6 +98,107 @@ function applyLeakDamage(player: Player, enemy: Enemy): void;
 The game has a JSON mode at ~40k fps — use it for verification.
 ```
 
+## Flows
+
+### Happy path — no drift
+
+```
+ YOU                         CLI                        CLAUDE CODE
+  │                           │                              │
+  ├── write runspec.md ──────►│                              │
+  ├── valtay start ──────────►│── creates run dir ──────────►│
+  │                           │   state: plan/pending        │
+  │                           │                              │
+  ├── "run the plan skill" ──────────────────────────────────►│
+  │                           │                 writes plan.md│
+  ├── valtay advance ────────►│── sees plan.md ─────────────►│
+  │                           │   state: build/pending       │
+  │                           │                              │
+  ├── "run the build skill" ─────────────────────────────────►│
+  │                           │                writes build.md│
+  ├── valtay advance ────────►│── sees build.md ────────────►│
+  │                           │   state: verify/pending      │
+  │                           │                              │
+  ├── "run the verify skill" ────────────────────────────────►│
+  │                           │            writes verify.json │
+  ├── valtay advance ────────►│── reads verify.json          │
+  │                           │   status: clean              │
+  │                           │   state: complete ✓          │
+```
+
+### Drift detected — you accept it
+
+```
+  ├── valtay advance ────────►│── reads verify.json
+  │                           │   status: drift
+  │                           │   state: awaiting_gate
+  │                           │
+  ├── valtay show verify.json │
+  │   ◄── "Player.health      │
+  │       missing in build"   │
+  │                           │
+  │   (you decide it's fine)  │
+  ├── valtay approve verify ─►│── state: complete ✓
+```
+
+### Drift detected — you fix it
+
+```
+  ├── valtay advance ────────►│── reads verify.json
+  │                           │   status: drift
+  │                           │   state: awaiting_gate
+  │                           │
+  ├── valtay show verify.json │
+  │   ◄── "Player.health      │
+  │       missing in build"   │
+  │                           │
+  │   (you want it fixed)     │
+  ├── valtay reject verify ──►│── state: build/pending
+  │     "add health" --to build│   rerun: true
+  │                           │                              │
+  ├── "run the build skill" ─────────────────────────────────►│
+  │                           │                writes build.md│
+  ├── valtay advance ────────►│── state: verify/pending      │
+  │                           │                              │
+  ├── "run the verify skill" ────────────────────────────────►│
+  │                           │            writes verify.json │
+  ├── valtay advance ────────►│── status: clean              │
+  │                           │   state: complete ✓          │
+```
+
+### Drift detected — plan was wrong
+
+```
+  ├── valtay advance ────────►│── reads verify.json
+  │                           │   status: drift
+  │                           │   state: awaiting_gate
+  │                           │
+  │   (the plan cut it wrong) │
+  ├── valtay reject verify ──►│── state: plan/pending
+  │     "wrong cut" --to plan  │   rerun: true
+  │                           │                              │
+  ├── "run the plan skill" ──────────────────────────────────►│
+  │                           │                 writes plan.md│
+  ├── valtay advance ────────►│── advances through           │
+  │                           │   build → verify             │
+  │                           │   ...                        │
+```
+
+### You edit the design mid-run
+
+```
+  │   (you realize the design  │
+  │    was wrong after seeing  │
+  │    the plan)               │
+  │                           │
+  ├── edit runspec.md ────────►│
+  ├── valtay status ─────────►│── "warn: frozen runspec.md
+  │                           │    no longer matches hash"
+  │                           │
+  │   (start a new run with   │
+  │    the corrected design)  │
+```
+
 ## CLI commands
 
 | Command | What it does |
