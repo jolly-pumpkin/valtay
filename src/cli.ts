@@ -8,6 +8,7 @@ import { runStatusLines, selectRun } from "./commands/status.ts";
 import { runApprove, runReject } from "./commands/gate.ts";
 import { runShow } from "./commands/show.ts";
 import { runCheck } from "./commands/check.ts";
+import { runUpgrade, formatUpgradeResult } from "./commands/upgrade.ts";
 import { advance } from "./run/orchestrator.ts";
 
 const program = new Command()
@@ -32,6 +33,13 @@ program
   .option("--workspace", "treat the target as a directory of repos")
   .option("--skill", "install the skills even without a .claude/ directory")
   .action((opts) => report(async () => formatInitResult(await runInit(opts))));
+
+program
+  .command("upgrade")
+  .description("Update installed skills to the current version")
+  .option("--path <path>", "target directory", ".")
+  .option("--clean", "remove obsolete skill directories")
+  .action((opts) => report(async () => formatUpgradeResult(await runUpgrade(opts))));
 
 program
   .command("new")

@@ -204,6 +204,7 @@ The game has a JSON mode at ~40k fps — use it for verification.
 | Command | What it does |
 |---|---|
 | `valtay init` | Write config + install skills into the repo |
+| `valtay upgrade` | Update skills to current version, detect obsolete ones |
 | `valtay new <name>` | Scaffold a run spec |
 | `valtay check <spec>` | Advisory lint over a run spec |
 | `valtay start <spec>` | Validate and open a run |

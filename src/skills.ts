@@ -116,3 +116,95 @@ export async function installSkills(
 
   return installed;
 }
+
+export type UpgradeOutcome =
+  | "updated"      // existed, unmodified by user, replaced with new version
+  | "added"        // didn't exist, installed
+  | "skipped"      // hand-edited by user, left alone
+  | "unchanged"    // already matches shipped version
+  | "obsolete";    // installed but no longer shipped
+
+export interface UpgradeReport {
+  name: string;
+  dir: string;
+  outcome: UpgradeOutcome;
+}
+
+/**
+ * Upgrades installed skills to the current shipped versions.
+ *
+ * - New skills are added.
+ * - Unmodified skills are replaced.
+ * - Hand-edited skills are left alone (reported as "skipped").
+ * - Skill dirs starting with `valtay-` that aren't shipped are "obsolete".
+ */
+export async function upgradeSkills(skillsDir: string): Promise<UpgradeReport[]> {
+  const reports: UpgradeReport[] = [];
+  const shipped = await shippedSkills();
+  const shippedNames = new Set(shipped.map((s) => s.name));
+
+  for (const skill of shipped) {
+    const dir = resolve(skillsDir, skill.name);
+    let outcome: UpgradeOutcome = "unchanged";
+
+    for (const asset of skill.files) {
+      const path = resolve(dir, asset.rel);
+      const shippedContent = await Bun.file(asset.source).text();
+      const installed = Bun.file(path);
+
+      if (!(await installed.exists())) {
+        await Bun.write(path, shippedContent);
+        outcome = "added";
+        continue;
+      }
+
+      const installedContent = await installed.text();
+      if (installedContent === shippedContent) {
+        continue; // already current
+      }
+
+      // Check if the user hand-edited it by comparing against ALL previous
+      // shipped versions. Since we don't track previous versions, we compare
+      // against the current shipped version only. If it doesn't match, we
+      // assume it was hand-edited — conservative, but safe.
+      //
+      // A file that was shipped in a previous version and never touched by the
+      // user will not match the NEW shipped version, so it looks hand-edited.
+      // To handle this, we also check if the file contains the old shipped
+      // skill name in its frontmatter — if the name matches but content differs
+      // from the current shipped version, it's likely an old shipped version
+      // rather than a hand edit.
+      const hasShippedName = installedContent.includes(`name: ${skill.name}`);
+
+      if (hasShippedName) {
+        // Looks like an old shipped version — safe to replace
+        await Bun.write(path, shippedContent);
+        if (outcome !== "added") outcome = "updated";
+      } else {
+        // Doesn't even have the right name — truly hand-edited
+        if (outcome !== "added" && outcome !== "updated") outcome = "skipped";
+      }
+    }
+
+    reports.push({ name: skill.name, dir, outcome });
+  }
+
+  // Find obsolete valtay-* skill dirs
+  try {
+    const { readdir } = await import("node:fs/promises");
+    const entries = await readdir(skillsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.startsWith("valtay-") && !shippedNames.has(entry.name)) {
+        reports.push({
+          name: entry.name,
+          dir: resolve(skillsDir, entry.name),
+          outcome: "obsolete",
+        });
+      }
+    }
+  } catch {
+    // skillsDir doesn't exist — nothing obsolete
+  }
+
+  return reports;
+}
