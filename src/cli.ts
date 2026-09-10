@@ -38,7 +38,6 @@ program
   .command("upgrade")
   .description("Update installed skills to the current version")
   .option("--path <path>", "target directory", ".")
-  .option("--clean", "remove obsolete skill directories")
   .action((opts) => report(async () => formatUpgradeResult(await runUpgrade(opts))));
 
 program

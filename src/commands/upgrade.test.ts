@@ -100,22 +100,7 @@ describe("upgrade", () => {
     expect(content).toContain("My custom plan skill");
   });
 
-  test("detects obsolete valtay-* skill directories", async () => {
-    const skillsDir = resolve(repo, ".claude", "skills");
-    await installSkills(skillsDir);
-
-    // Create an obsolete skill dir (from old 6-phase pipeline)
-    await mkdir(resolve(skillsDir, "valtay-research"), { recursive: true });
-    await writeFile(resolve(skillsDir, "valtay-research", "SKILL.md"), "old");
-
-    const result = await runUpgrade({ path: repo });
-    const obsolete = result.reports.filter((r) => r.outcome === "obsolete");
-
-    expect(obsolete.length).toBe(1);
-    expect(obsolete[0]!.name).toBe("valtay-research");
-  });
-
-  test("--clean removes obsolete directories", async () => {
+  test("removes obsolete valtay-* skill directories", async () => {
     const skillsDir = resolve(repo, ".claude", "skills");
     await installSkills(skillsDir);
 
@@ -123,8 +108,9 @@ describe("upgrade", () => {
     await mkdir(obsoletePath, { recursive: true });
     await writeFile(resolve(obsoletePath, "SKILL.md"), "old");
 
-    const result = await runUpgrade({ path: repo, clean: true });
+    const result = await runUpgrade({ path: repo });
 
+    expect(result.reports.some((r) => r.outcome === "obsolete" && r.name === "valtay-research")).toBe(true);
     expect(result.cleaned).toContain("valtay-research");
     expect(await exists(obsoletePath)).toBe(false);
   });
@@ -141,13 +127,12 @@ describe("formatUpgradeResult", () => {
         { name: "valtay-verify", dir: "/tmp", outcome: "added" },
         { name: "valtay-research", dir: "/tmp", outcome: "obsolete" },
       ],
-      cleaned: [],
+      cleaned: ["valtay-research"],
     }).join("\n");
 
     expect(lines).toContain("added     valtay-verify");
     expect(lines).toContain("updated   valtay-plan");
     expect(lines).toContain("current   valtay-build");
-    expect(lines).toContain("obsolete  valtay-research");
-    expect(lines).toContain("--clean");
+    expect(lines).toContain("removed   valtay-research");
   });
 });

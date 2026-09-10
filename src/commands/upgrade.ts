@@ -6,8 +6,6 @@ import { skillsDirsFor } from "./init.ts";
 
 export interface UpgradeOptions {
   path?: string;
-  /** Remove obsolete skill directories instead of just warning. */
-  clean?: boolean;
 }
 
 export interface UpgradeResult {
@@ -31,11 +29,9 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
   }
 
   const cleaned: string[] = [];
-  if (options.clean) {
-    for (const r of reports.filter((r) => r.outcome === "obsolete")) {
-      await rm(r.dir, { recursive: true, force: true });
-      cleaned.push(r.name);
-    }
+  for (const r of reports.filter((r) => r.outcome === "obsolete")) {
+    await rm(r.dir, { recursive: true, force: true });
+    cleaned.push(r.name);
   }
 
   return { root, skillsDirs, reports, cleaned };
@@ -56,11 +52,7 @@ export function formatUpgradeResult(result: UpgradeResult): string[] {
   for (const r of skipped) lines.push(`  skipped   ${r.name} (hand-edited)`);
 
   for (const r of obsolete) {
-    if (result.cleaned.includes(r.name)) {
-      lines.push(`  removed   ${r.name}`);
-    } else {
-      lines.push(`  obsolete  ${r.name} — remove with --clean`);
-    }
+    lines.push(`  removed   ${r.name}`);
   }
 
   if (added.length === 0 && updated.length === 0 && obsolete.length === 0) {
