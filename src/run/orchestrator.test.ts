@@ -51,7 +51,7 @@ describe("advance", () => {
 
   test("plan artifact auto-advances to build", async () => {
     const run = await newRun();
-    await writeArtifact(run, "plan.json", '{"epic":"test","release_units":[]}');
+    await writeArtifact(run, "plan.md", '{"epic":"test","release_units":[]}');
 
     const lines = await advance(run);
     expect(lines.some((l) => l.includes("Plan: artifact found"))).toBe(true);
@@ -63,7 +63,7 @@ describe("advance", () => {
 
   test("build artifact auto-advances to verify", async () => {
     const run = await newRun();
-    await writeArtifact(run, "plan.json", '{"epic":"test"}');
+    await writeArtifact(run, "plan.md", '{"epic":"test"}');
     await writeArtifact(run, "build.md", "- implemented the thing");
 
     await advance(run);
@@ -75,7 +75,7 @@ describe("advance", () => {
 
   test("clean verify completes the run", async () => {
     const run = await newRun();
-    await writeArtifact(run, "plan.json", '{"epic":"test"}');
+    await writeArtifact(run, "plan.md", '{"epic":"test"}');
     await writeArtifact(run, "build.md", "- done");
     await writeArtifact(run, "verify.json", '{"status":"clean","findings":[]}');
 
@@ -88,7 +88,7 @@ describe("advance", () => {
 
   test("drift verify parks the run", async () => {
     const run = await newRun();
-    await writeArtifact(run, "plan.json", '{"epic":"test"}');
+    await writeArtifact(run, "plan.md", '{"epic":"test"}');
     await writeArtifact(run, "build.md", "- done");
     await writeArtifact(
       run,
@@ -111,7 +111,7 @@ describe("advance", () => {
 
   test("invalid verify JSON fails the run", async () => {
     const run = await newRun();
-    await writeArtifact(run, "plan.json", '{"epic":"test"}');
+    await writeArtifact(run, "plan.md", '{"epic":"test"}');
     await writeArtifact(run, "build.md", "- done");
     await writeArtifact(run, "verify.json", "not json");
 

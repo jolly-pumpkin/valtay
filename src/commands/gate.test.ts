@@ -31,7 +31,7 @@ async function startAndPlaceArtifacts() {
   const run = await runStart({ spec: path, repo });
 
   // Place artifacts for all phases
-  await writeArtifact(run, "plan.json", '{"epic":"check","release_units":[]}');
+  await writeArtifact(run, "plan.md", '{"epic":"check","release_units":[]}');
   await writeArtifact(run, "build.md", "- implemented check command");
   await writeArtifact(
     run,
@@ -131,7 +131,7 @@ describe("show", () => {
     await startAndPlaceArtifacts();
 
     expect((await runShow({ repo, artifact: "plan" })).join("\n")).toContain("check");
-    expect((await runShow({ repo, artifact: "plan.json" })).join("\n")).toContain("check");
+    expect((await runShow({ repo, artifact: "plan.md" })).join("\n")).toContain("check");
   });
 
   test("names what exists when asked for something that does not", async () => {
@@ -139,6 +139,6 @@ describe("show", () => {
     await writeFile(path, SPEC);
     await runStart({ spec: path, repo });
 
-    await expect(runShow({ repo, artifact: "plan.json" })).rejects.toThrow(/No plan.json/);
+    await expect(runShow({ repo, artifact: "plan.md" })).rejects.toThrow(/No plan.md/);
   });
 });

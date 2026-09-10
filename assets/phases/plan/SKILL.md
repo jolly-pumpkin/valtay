@@ -20,28 +20,27 @@ Find the run directory at `.valtay/runs/<name>/` in the current repo. Read:
 
 ## What you produce
 
-Write `plan.json` to the run directory. Emit one JSON object, nothing else.
+Write `plan.md` to the run directory. Use the following structure:
 
-```json
-{
-  "epic": "<short name for the change>",
-  "release_units": [{
-    "id": "RU-1",
-    "goal": "<the coherent piece of value this unit delivers>",
-    "checkpoint": "<command that decides whether this unit works>",
-    "layers": [{
-      "id": "L1",
-      "title": "<type(scope): imperative summary>",
-      "kind": "mechanical | semantic",
-      "inert": true,
-      "files": ["src/..."],
-      "est_loc": {"add": 0, "del": 0}
-    }]
-  }],
-  "alternatives_considered": [
-    {"shape": "<a different cut>", "rejected": "<why it is worse>"}
-  ]
-}
+```markdown
+# Plan: <short name for the change>
+
+## RU-1 — <goal>
+
+**Checkpoint:** `<command that decides whether this unit works>`
+
+### L1 — <type(scope): imperative summary>
+
+- **Kind:** mechanical | semantic
+- **Inert:** yes | no
+- **Files:** `src/...`, `src/...`
+- **Est LOC:** +N / -N
+
+### L2 — ...
+
+## Alternatives considered
+
+- **<a different cut>** — rejected because <why it is worse>
 ```
 
 ## Decomposition heuristics, in this order
@@ -61,10 +60,10 @@ Write `plan.json` to the run directory. Emit one JSON object, nothing else.
    test or run command.
 2. **`files` is the build fence.** A worker on that layer may write those files
    and no others, so list them exactly.
-3. **`alternatives_considered` is required and must be real.** At least one
+3. **`alternatives considered` is required and must be real.** At least one
    genuinely different cut, with the actual reason it loses.
 4. **Order layers by dependency.** A stack merges bottom-up; `L1` must land
    first.
-5. **Estimate honestly.** `est_loc` guides the reviewer's expectations.
+5. **Estimate honestly.** Est LOC guides the reviewer's expectations.
 6. **You cannot write source files.** Your tools are read-only by construction.
-   Only write the plan JSON.
+   Only write the plan markdown.

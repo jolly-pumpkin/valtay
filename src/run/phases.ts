@@ -18,8 +18,8 @@ export const PHASES: readonly PhaseDef[] = [
   {
     id: "plan",
     title: "Plan",
-    output: "plan.json",
-    format: "json",
+    output: "plan.md",
+    format: "markdown",
     write: false,
     summary: "release units and review layers, cut from the design",
   },

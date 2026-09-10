@@ -36,11 +36,11 @@ valtay start .valtay/runs/my-change/runspec.md
 
 ```bash
 # 1. Run the plan skill in your Claude Code session
-#    → it reads your design, writes plan.json to the run dir
-valtay advance                    # CLI sees plan.json, advances to build
+#    → it reads your design, writes plan.md to the run dir
+valtay advance                    # CLI sees plan.md, advances to build
 
 # 2. Run the build skill
-#    → it reads plan.json + your design, implements the code
+#    → it reads plan.md + your design, implements the code
 valtay advance                    # CLI sees build.md, advances to verify
 
 # 3. Run the verify skill

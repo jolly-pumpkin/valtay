@@ -87,7 +87,7 @@ program
 program
   .command("show")
   .description("Print one of the run's artifacts")
-  .argument("<artifact>", "artifact path, e.g. plan.json or verify.json")
+  .argument("<artifact>", "artifact path, e.g. plan.md or verify.json")
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
   .action((artifact, opts) => report(() => runShow({ artifact, ...opts })));

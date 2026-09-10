@@ -16,7 +16,7 @@ Find the run directory at `.valtay/runs/<name>/` in the current repo. Read:
 
 - `runspec.md` — the `## Design` section is the source of truth for structures
   and interfaces
-- `plan.json` — the approved plan with release units and layers
+- `plan.md` — the approved plan with release units and layers
 
 ## What to do
 
