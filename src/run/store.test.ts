@@ -28,18 +28,20 @@ let repo: string;
 
 const SPEC = `---
 run: demo
+host: claude
+model: sonnet
 ---
 
 # Demo
 
-## Assumptions to verify
+## Design
 
-- **A-1** Verify something.
+Some design content.
 `;
 
 async function newRun(name = "demo"): Promise<Run> {
   const spec = parseRunspec(SPEC, resolve(root, "runspec.md"));
-  return createRun(repo, name, spec, await resolveConfig(repo, spec));
+  return createRun(repo, name, spec, resolveConfig(spec));
 }
 
 beforeEach(async () => {
@@ -58,13 +60,11 @@ describe("createRun", () => {
 
     expect(run.dir).toBe(runDir(repo, "demo"));
     expect(run.meta.runspec.sha).toBe(sha256(SPEC));
-    expect(run.meta.vendor_diversity).toBe(false);
 
-    // The frozen copy, not the original path, is what the run actually reads.
     expect(await readFile(resolve(run.dir, "runspec.md"), "utf-8")).toBe(SPEC);
 
     const state = await readState(run);
-    expect(state).toMatchObject({ phase: "research", status: "pending", completed: [] });
+    expect(state).toMatchObject({ phase: "plan", status: "pending", completed: [] });
   });
 
   test("refuses to reopen an existing run", async () => {
@@ -101,91 +101,77 @@ describe("findRun", () => {
 describe("approvals bind to artifact hashes", () => {
   const approval = (artifacts: ApprovalRecord["artifacts"]): ApprovalRecord => ({
     ts: new Date().toISOString(),
-    gate: "G1",
+    gate: "verify",
     decision: "approve",
     artifacts,
   });
 
   test("an approval stands while its artifacts are untouched", async () => {
     const run = await newRun();
-    const ref = await writeArtifact(run, "design.md", "## Deltas\nD-1 something\n");
+    const ref = await writeArtifact(run, "verify.json", '{"status":"clean","findings":[]}');
 
     await appendApproval(run, approval([ref]));
 
-    expect(await isApproved(run, "G1")).toBe(true);
-    expect(await staleArtifacts(run, (await latestDecision(run, "G1"))!)).toEqual([]);
+    expect(await isApproved(run, "verify")).toBe(true);
+    expect(await staleArtifacts(run, (await latestDecision(run, "verify"))!)).toEqual([]);
   });
 
   test("hand-editing an approved artifact voids the approval", async () => {
     const run = await newRun();
-    const ref = await writeArtifact(run, "design.md", "original");
+    const ref = await writeArtifact(run, "verify.json", "original");
     await appendApproval(run, approval([ref]));
 
-    // design.md §12.3: this is the intended workflow, not an error.
-    await writeArtifact(run, "design.md", "edited by hand");
+    await writeArtifact(run, "verify.json", "edited by hand");
 
-    expect(await isApproved(run, "G1")).toBe(false);
-    expect(await staleArtifacts(run, (await latestDecision(run, "G1"))!)).toEqual(["design.md"]);
+    expect(await isApproved(run, "verify")).toBe(false);
+    expect(await staleArtifacts(run, (await latestDecision(run, "verify"))!)).toEqual(["verify.json"]);
   });
 
   test("a deleted artifact voids it too", async () => {
     const run = await newRun();
     await appendApproval(run, approval([{ path: "gone.md", sha: sha256("x") }]));
-    expect(await isApproved(run, "G1")).toBe(false);
+    expect(await isApproved(run, "verify")).toBe(false);
   });
 
   test("the latest decision wins, and a rejection is not an approval", async () => {
     const run = await newRun();
-    const ref = await writeArtifact(run, "design.md", "v1");
+    const ref = await writeArtifact(run, "verify.json", "v1");
 
     await appendApproval(run, approval([ref]));
     await appendApproval(run, {
       ts: new Date().toISOString(),
-      gate: "G1",
+      gate: "verify",
       decision: "reject",
-      to: "design.md",
-      reason: "does health persist?",
+      reason: "drift not acceptable",
       artifacts: [ref],
     });
 
-    const decision = await latestDecision(run, "G1");
+    const decision = await latestDecision(run, "verify");
     expect(decision?.decision).toBe("reject");
-    expect(decision?.to).toBe("design.md");
-    expect(await isApproved(run, "G1")).toBe(false);
+    expect(await isApproved(run, "verify")).toBe(false);
   });
 
   test("gates with no decision are not approved", async () => {
-    expect(await isApproved(await newRun(), "G4")).toBe(false);
+    expect(await isApproved(await newRun(), "verify")).toBe(false);
   });
 });
 
 describe("manifest", () => {
-  test("appends one record per invocation, in order", async () => {
+  test("appends one record per artifact, in order", async () => {
     const run = await newRun();
-    const record = (attempt: number, exit: number): ManifestRecord => ({
+    const record = (phase: "plan" | "build"): ManifestRecord => ({
       ts: new Date().toISOString(),
-      phase: "research",
-      role: "researcher",
-      host: "claude-code",
-      model: "sonnet",
-      skill: "valtay-research",
-      prompt_sha: sha256("SKILL.md"),
-      inputs: [],
-      outputs: [],
-      duration_s: 1,
-      exit_code: exit,
-      attempt,
+      phase,
+      artifact: { path: `${phase}.json`, sha: sha256(phase) },
       notes: [],
     });
 
-    // Invariant 7: failures appear in the manifest too.
-    await appendManifest(run, record(1, 1));
-    await appendManifest(run, record(2, 0));
+    await appendManifest(run, record("plan"));
+    await appendManifest(run, record("build"));
 
     const manifest = await readManifest(run);
     expect(manifest).toHaveLength(2);
-    expect(manifest.map((r) => r.exit_code)).toEqual([1, 0]);
-    expect(manifest[1]!.attempt).toBe(2);
+    expect(manifest.map((r) => r.phase)).toEqual(["plan", "build"]);
   });
 });
 
@@ -195,17 +181,15 @@ describe("state", () => {
     const before = (await readState(run)).updated;
 
     await writeState(run, {
-      phase: "reconcile",
-      status: "awaiting_gate",
-      gate: "G1",
-      completed: ["research"],
+      phase: "build",
+      status: "pending",
+      completed: ["plan"],
       updated: "ignored",
     });
 
     const state = await readState(await loadRun(run.dir));
-    expect(state.phase).toBe("reconcile");
-    expect(state.gate).toBe("G1");
-    expect(state.completed).toEqual(["research"]);
+    expect(state.phase).toBe("build");
+    expect(state.completed).toEqual(["plan"]);
     expect(state.updated).not.toBe("ignored");
     expect(Date.parse(state.updated)).toBeGreaterThanOrEqual(Date.parse(before));
   });

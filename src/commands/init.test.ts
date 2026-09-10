@@ -43,9 +43,8 @@ test("repo mode writes valtay.toml and a blank .valtay/.gitignore", async () => 
   expect(result.gitignore).toBe("written");
 
   const toml = Bun.TOML.parse(await readFile(resolve(repo, "valtay.toml"), "utf-8")) as any;
-  expect(toml.roles.default).toBeDefined();
-  expect(toml.trace).toBeDefined();
-  expect(toml.layers).toBeDefined();
+  expect(toml.hosts).toBeDefined();
+  expect(toml.host).toBeDefined();
   expect(toml.workspace).toBeUndefined();
 
   const ignore = await readFile(resolve(repo, ".valtay", ".gitignore"), "utf-8");
@@ -103,8 +102,8 @@ test("workspace mode records the child repos and omits per-repo tables", async (
 
   const toml = Bun.TOML.parse(await readFile(resolve(ws, "valtay.toml"), "utf-8")) as any;
   expect(toml.workspace.repos).toEqual(["api", "web"]);
-  expect(toml.trace).toBeUndefined();
-  expect(toml.layers).toBeUndefined();
+  // Workspace config has no per-repo settings
+  expect(toml.hosts).toBeDefined();
 
   expect(await readFile(resolve(ws, ".valtay", ".gitignore"), "utf-8")).toBe("");
   // Child repos are left alone — you init each one separately.
@@ -148,7 +147,7 @@ test("re-running leaves an existing valtay.toml alone unless --force", async () 
 
   const forced = await runInit({ path: repo, force: true });
   expect(forced.config).toBe("written");
-  expect(await readFile(resolve(repo, "valtay.toml"), "utf-8")).toContain("[roles.default]");
+  expect(await readFile(resolve(repo, "valtay.toml"), "utf-8")).toContain("[hosts.");
 });
 
 test("--force never clobbers a filled-in .valtay/.gitignore", async () => {
@@ -200,10 +199,8 @@ test("the generated config is valid TOML in both modes", async () => {
   const repo = await makeRepo("repo");
   await runInit({ path: repo });
   const repoToml = Bun.TOML.parse(await readFile(resolve(repo, "valtay.toml"), "utf-8")) as any;
-  expect(repoToml.roles.default.host).toBe("claude-code");
   expect(repoToml.hosts["claude-code"].bin).toBe("claude");
-  expect(repoToml.trace.tier).toBe("agent");
-  expect(repoToml.layers).toEqual({});
+  expect(repoToml.host).toBe("claude-code");
 
   const ws = resolve(root, "work");
   await mkdir(ws, { recursive: true });
@@ -254,9 +251,7 @@ test("a phase skill lands where the host will look for it", async () => {
 
   const result = await runInit({ path: repo });
 
-  // The adapter names `/valtay-research`; Claude Code resolves that against
-  // `<workdir>/.claude/skills/`. These two have to agree or the phase runs
-  // uninstructed.
+  // Each phase skill is installed under `.claude/skills/valtay-<phase>/`.
   for (const def of PHASES) {
     const name = phaseSkillName(def.id);
     expect(outcomeOf(result, name)).toBe("written");
@@ -317,7 +312,7 @@ test("--skill installs into a repo with no .claude/", async () => {
 
   expect(outcomeOf(result, COMPOSE_SKILL.name)).toBe("written");
   expect(await exists(composeFile(repo, "SKILL.md"))).toBe(true);
-  expect(await exists(skillFile(repo, phaseSkillName("research"), "SKILL.md"))).toBe(true);
+  expect(await exists(skillFile(repo, phaseSkillName("plan"), "SKILL.md"))).toBe(true);
 });
 
 test("re-running leaves a hand-edited skill alone unless --force", async () => {
@@ -393,14 +388,12 @@ test("every shipped skill asset resolves and carries skill frontmatter", async (
   }
 });
 
-test("phase skills never auto-invoke", async () => {
-  // A phase is chosen by the orchestrator, never by a model deciding it looks
-  // relevant — and these sit in the repo, so without this they would surface in the
-  // developer's own sessions too.
+test("phase skills have valid frontmatter", async () => {
   for (const def of PHASES) {
     const skill = (await shippedSkills()).find((s) => s.name === phaseSkillName(def.id));
     const text = await Bun.file(skill!.files[0]!.source).text();
-    expect(text).toContain("disable-model-invocation: true");
+    expect(text).toContain(`name: valtay-${def.id}`);
+    expect(text).toContain("description:");
   }
 });
 

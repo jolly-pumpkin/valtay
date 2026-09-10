@@ -12,12 +12,10 @@ let repo: string;
 const savedHome = process.env["VALTAY_HOME"];
 
 function spec(body: string): string {
-  return `---\nrun: demo\n---\n\n# Demo\n\n${body}\n`;
+  return `---\nrun: demo\nhost: claude\nmodel: sonnet\n---\n\n# Demo\n\n${body}\n`;
 }
 
-const COMPLETE = spec(
-  "## Assumptions to verify\n\n- **A-1** Verify whether the store appends or overwrites.\n"
-);
+const COMPLETE = spec("## Design\n\nDo the thing.\n");
 
 async function writeSpec(content: string): Promise<string> {
   const path = resolve(repo, "runspec.md");
@@ -39,31 +37,9 @@ afterEach(async () => {
 });
 
 describe("preflight", () => {
-  test("an unresolved conflict blocks the run", async () => {
-    const path = await writeSpec(
-      spec(
-        "## Conflicts\n\n- **C-2** PRD and the ticket disagree.\n  → **UNRESOLVED** — needs a decision.\n\n" +
-          "## Assumptions to verify\n\n- **A-1** Verify something.\n"
-      )
-    );
-
-    await expect(runStart({ spec: path, repo })).rejects.toThrow(/unresolved conflict/i);
-  });
-
-  test("a resolved conflict does not", async () => {
-    const path = await writeSpec(
-      spec(
-        "## Conflicts\n\n- **C-1** Two documents disagree.\n  → **RESOLVED: the code.**\n\n" +
-          "## Assumptions to verify\n\n- **A-1** Verify something.\n"
-      )
-    );
-
-    expect((await runStart({ spec: path, repo })).meta.run).toBe("demo");
-  });
-
-  test("a spec with no assumptions section blocks", async () => {
-    const path = await writeSpec(spec("## Intent\n\nDo the thing.\n"));
-    await expect(runStart({ spec: path, repo })).rejects.toThrow(/Assumptions to verify/i);
+  test("a spec with no design section blocks", async () => {
+    const path = await writeSpec(spec("## Notes\n\nsome notes\n"));
+    await expect(runStart({ spec: path, repo })).rejects.toThrow(/Design/);
   });
 
   test("a spec outside any repo blocks", async () => {
@@ -74,7 +50,7 @@ describe("preflight", () => {
 });
 
 describe("start", () => {
-  test("freezes the spec and reports the binding", async () => {
+  test("freezes the spec and reports", async () => {
     const path = await writeSpec(COMPLETE);
     const run = await runStart({ spec: path, repo });
 
@@ -83,9 +59,7 @@ describe("start", () => {
 
     const lines = formatStartResult(run).join("\n");
     expect(lines).toContain('Started run "demo"');
-    expect(lines).toContain("trace   tier agent");
-    // Single-host runs must say so — invariant 9 cannot hold on one vendor.
-    expect(lines).toContain("invariant 9");
+    expect(lines).toContain("plan skill");
   });
 
   test("--run overrides the spec's own name", async () => {
@@ -105,31 +79,28 @@ describe("status", () => {
 
     expect(text).toContain('Run "demo"');
     expect(text).toContain("state   pending");
-    for (const phase of ["Research", "Reconcile", "Shape", "Plan", "Probe", "Build"]) {
+    for (const phase of ["Plan", "Build", "Verify"]) {
       expect(text).toContain(phase);
     }
-    // `shape.{ext}` resolves against the repo — a package.json makes it TypeScript.
-    await writeFile(resolve(repo, "package.json"), "{}");
-    expect((await runStatusLines({ repo })).join("\n")).toContain("shape.ts");
 
-    expect(lines.find((l) => l.includes("Research"))?.startsWith(">")).toBe(true);
+    expect(lines.find((l) => l.includes("Plan"))?.startsWith(">")).toBe(true);
   });
 
   test("shows a voided approval rather than hiding it", async () => {
     await runStart({ spec: await writeSpec(COMPLETE), repo });
     const run = await findRun(repo);
 
-    const ref = await writeArtifact(run, "design.md", "v1");
+    const ref = await writeArtifact(run, "verify.json", '{"status":"clean"}');
     await appendApproval(run, {
       ts: new Date().toISOString(),
-      gate: "G1",
+      gate: "verify",
       decision: "approve",
       artifacts: [ref],
     });
-    expect((await runStatusLines({ repo })).join("\n")).toContain("G1 approved");
+    expect((await runStatusLines({ repo })).join("\n")).toContain("verify approved");
 
-    await writeArtifact(run, "design.md", "hand-edited");
-    expect((await runStatusLines({ repo })).join("\n")).toContain("G1 approval VOID");
+    await writeArtifact(run, "verify.json", "hand-edited");
+    expect((await runStatusLines({ repo })).join("\n")).toContain("verify approval VOID");
   });
 
   test("warns when the frozen spec copy has been edited", async () => {

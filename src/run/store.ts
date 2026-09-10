@@ -2,10 +2,10 @@ import { resolve, dirname } from "path";
 import { appendFile, mkdir, readdir } from "node:fs/promises";
 import { pathExists } from "../detect.ts";
 import { sha256, type Runspec } from "../runspec.ts";
-import { vendorDiversity, type ResolvedConfig } from "../config.ts";
+import type { ResolvedConfig } from "../config.ts";
 
-export type PhaseId = "research" | "reconcile" | "shape" | "plan" | "probe" | "build";
-export type GateId = "G1" | "G2" | "G3" | "G4" | "G5" | "G6";
+export type PhaseId = "plan" | "build" | "verify";
+export type GateId = "verify";
 
 export type RunStatus =
   /** the phase named in `phase` has not been invoked yet */
@@ -43,45 +43,23 @@ export interface ArtifactRef {
  * Fields mirror design.md §17; `cost_usd`, `usage` and `permission_denials` come
  * straight off the host adapter's structured result.
  */
+/**
+ * One record per artifact placed, for auditability.
+ * Simpler than the old manifest — the orchestrator no longer invokes phases,
+ * so there is no exit_code, duration, or retry count to record.
+ */
 export interface ManifestRecord {
   ts: string;
   phase: PhaseId;
-  role: string;
-  host: string;
-  model: string;
-  effort?: string;
-  /** Skill the host was told to load, e.g. `valtay-research`. */
-  skill: string;
-  /**
-   * Hash of the SKILL.md as it sat in the host's working directory — what the host
-   * actually read, so a hand-edited phase skill is visible in the manifest rather
-   * than indistinguishable from the shipped one.
-   */
-  prompt_sha: string;
-  inputs: ArtifactRef[];
-  outputs: ArtifactRef[];
-  duration_s: number;
-  exit_code: number;
-  attempt: number;
-  usage?: Record<string, unknown>;
-  cost_usd?: number;
-  permission_denials?: unknown[];
+  artifact: ArtifactRef;
   notes: string[];
 }
 
 export interface ApprovalRecord {
   ts: string;
   gate: GateId;
-  /**
-   * `auto` is a pre-authorization the human wrote in advance clearing itself
-   * (design.md §12.4). It stands like an approval and is recorded distinctly, because
-   * "nobody read this, a predicate did" is the one fact the log must never lose.
-   */
-  decision: "approve" | "reject" | "auto";
-  unit?: string;
-  /** Typed rejection: which artifact was wrong (design.md §12.3). */
-  to?: string;
-  /** The rejection's correction, or the predicate that cleared an auto-pass. */
+  decision: "approve" | "reject";
+  /** Why the human approved or rejected. */
   reason?: string;
   /** Every artifact the gate covered, hashed. A later edit voids the approval. */
   artifacts: ArtifactRef[];
@@ -93,7 +71,6 @@ export interface RunMeta {
   created: string;
   runspec: { path: string; sha: string };
   config: ResolvedConfig;
-  vendor_diversity: boolean;
 }
 
 export interface Run {
@@ -141,11 +118,8 @@ export async function createRun(
     run: name,
     repo: repoRoot,
     created: new Date().toISOString(),
-    // The spec's SHA is frozen here so editing it mid-run is a detected event
-    // rather than a silent divergence (design.md §8.1).
     runspec: { path: spec.path, sha: sha256(spec.raw) },
     config,
-    vendor_diversity: vendorDiversity(config),
   };
 
   await mkdir(dir, { recursive: true });
@@ -154,7 +128,7 @@ export async function createRun(
   await Bun.write(resolve(dir, "run.json"), `${JSON.stringify(meta, null, 2)}\n`);
   await writeArtifact(run, "runspec.md", spec.raw);
   await writeState(run, {
-    phase: "research",
+    phase: "plan",
     status: "pending",
     completed: [],
     updated: meta.created,

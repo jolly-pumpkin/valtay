@@ -81,14 +81,12 @@ function hostTables(hosts: HostSpec[]): string {
     .join("\n\n");
 }
 
-function rolesTable(hosts: HostSpec[]): string {
+function defaultsSection(hosts: HostSpec[]): string {
   return [
-    "[roles.default]",
+    "# Default host/model/effort for all phases",
     `host = ${tomlString(hosts[0]!.name)}`,
     'model = "sonnet"',
     'effort = "medium"',
-    'timeout = "10m"',
-    "# TODO: per-role overrides — see docs/design.md §6.1",
   ].join("\n");
 }
 
@@ -96,20 +94,23 @@ const PRECEDENCE =
   "# Precedence: runspec frontmatter -> ./valtay.toml -> ~/.valtay/config.toml -> built-in";
 
 export function renderRepoConfig(hosts: HostSpec[]): string {
-  return `# valtay.toml - repo config. See docs/design.md section 20.
+  return `# valtay.toml - repo config
 ${PRECEDENCE}
+
+${defaultsSection(hosts)}
 
 ${hostTables(hosts)}
 
-${rolesTable(hosts)}
-
-[trace]
-tier = "agent"  # TODO: runtime | static | agent
-command = ""    # TODO: trace command, with a {scenario} placeholder
-
-[layers]
-# TODO: map path globs to layer names
-# "src/ui/**" = "ui"
+# Per-phase overrides (optional)
+# [phases.plan]
+# model = "sonnet"
+# effort = "medium"
+# [phases.build]
+# model = "opus"
+# effort = "high"
+# [phases.verify]
+# model = "opus"
+# effort = "high"
 `;
 }
 
@@ -119,18 +120,15 @@ export function renderWorkspaceConfig(hosts: HostSpec[], repos: string[]): strin
       ? `repos = [${repos.map(tomlString).join(", ")}]`
       : "repos = []  # TODO: no repos found in this directory";
 
-  return `# valtay.toml - workspace config. See docs/design.md section 20.
+  return `# valtay.toml - workspace config
 ${PRECEDENCE}
-#
-# This directory holds repos rather than being one. Settings that describe a
-# single codebase - [trace], [layers] - belong in each repo's own valtay.toml.
+
+${defaultsSection(hosts)}
 
 [workspace]
 ${list}
 
 ${hostTables(hosts)}
-
-${rolesTable(hosts)}
 `;
 }
 

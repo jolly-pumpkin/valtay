@@ -8,15 +8,11 @@ import { parseRunspec } from "../runspec.ts";
 let root: string;
 
 function spec(body: string): string {
-  return `---\nrun: demo\n---\n\n# Demo\n\n${body}\n`;
+  return `---\nrun: demo\nhost: claude\nmodel: sonnet\n---\n\n# Demo\n\n${body}\n`;
 }
 
 const COMPLETE = spec(
-  "## Intent\n\nDo the thing.\n\n" +
-    "## Tickets\n\nNONE\n\n" +
-    "## Conflicts\n\nNONE\n\n" +
-    "## Gaps\n\nNONE\n\n" +
-    "## Assumptions to verify\n\n- **A-1** Verify something.\n\n" +
+  "## Design\n\nDo the thing.\n\n" +
     "## Out of scope\n\nNONE\n\n" +
     "## Notes\n\nNONE\n"
 );
@@ -35,35 +31,22 @@ describe("checkRunspec", () => {
     expect(checkRunspec(parsed)).toEqual([]);
   });
 
-  test("an unresolved conflict is a warn finding, not a throw", () => {
-    const parsed = parseRunspec(
-      spec(
-        "## Conflicts\n\n- **C-2** PRD and the ticket disagree.\n  → **UNRESOLVED** — needs a decision.\n\n" +
-          "## Assumptions to verify\n\n- **A-1** Verify something.\n"
-      ),
-      "runspec.md"
-    );
-
+  test("a missing design section is a warn finding", () => {
+    const parsed = parseRunspec(spec("## Notes\n\nsome notes\n"), "runspec.md");
     const findings = checkRunspec(parsed);
+
     expect(findings).toContainEqual({
       level: "warn",
-      rule: "unresolved-conflict",
-      message: expect.stringContaining("C-2"),
+      rule: "missing-design",
+      message: '"## Design" section is missing',
     });
   });
 
-  test("a missing section is an info finding", () => {
-    const parsed = parseRunspec(spec("## Intent\n\nDo the thing.\n"), "runspec.md");
+  test("a TODO left in a section is a has-todo finding", () => {
+    const parsed = parseRunspec(spec("## Design\n\nTODO: fill in\n"), "runspec.md");
     const findings = checkRunspec(parsed);
 
-    expect(findings.some((f) => f.rule === "incomplete-section" && f.level === "info")).toBe(true);
-  });
-
-  test("a TODO left in a section is an incomplete-section finding", () => {
-    const parsed = parseRunspec(spec("## Notes\n\nTODO\n"), "runspec.md");
-    const findings = checkRunspec(parsed);
-
-    expect(findings.some((f) => f.rule === "incomplete-section")).toBe(true);
+    expect(findings.some((f) => f.rule === "has-todo")).toBe(true);
   });
 });
 
@@ -79,30 +62,22 @@ describe("formatFindings", () => {
   test("lists each finding's level, rule, and message", () => {
     const parsed = parseRunspec(COMPLETE, "runspec.md");
     const lines = formatFindings(parsed, [
-      { level: "warn", rule: "unresolved-conflict", message: "unresolved conflict: C-2" },
+      { level: "warn", rule: "missing-design", message: '"## Design" section is missing' },
     ]).join("\n");
 
     expect(lines).toContain("warn");
-    expect(lines).toContain("[unresolved-conflict]");
-    expect(lines).toContain("C-2");
+    expect(lines).toContain("[missing-design]");
   });
 });
 
 describe("runCheck", () => {
-  test("is a pure read: never blocks and never writes .valtay/ state", async () => {
+  test("is a pure read: never writes .valtay/ state", async () => {
     const path = resolve(root, "runspec.md");
-    await writeFile(
-      path,
-      spec(
-        "## Conflicts\n\n- **C-1** Unresolved.\n  → **UNRESOLVED**\n\n" +
-          "## Assumptions to verify\n\n- **A-1** Verify something.\n"
-      )
-    );
+    await writeFile(path, spec("## Notes\n\nsome notes\n"));
 
     const lines = await runCheck({ spec: path });
-    expect(lines.join("\n")).toContain("unresolved-conflict");
+    expect(lines.join("\n")).toContain("missing-design");
 
-    // check.ts never creates run state alongside the spec it read.
     const entries = await Bun.$`ls ${root}`.text();
     expect(entries).not.toContain(".valtay");
   });

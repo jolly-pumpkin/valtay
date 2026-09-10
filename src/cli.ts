@@ -7,16 +7,14 @@ import { runStart, formatStartResult } from "./commands/start.ts";
 import { runStatusLines, selectRun } from "./commands/status.ts";
 import { runApprove, runReject } from "./commands/gate.ts";
 import { runShow } from "./commands/show.ts";
-import { runTrace } from "./commands/trace.ts";
 import { runCheck } from "./commands/check.ts";
-import { advance, retry } from "./run/orchestrator.ts";
+import { advance } from "./run/orchestrator.ts";
 
 const program = new Command()
   .name("valtay")
-  .description("Land multiple tickets as safe, reviewable PRs from one run")
+  .description("Runspec → Plan → Build → Verify")
   .version("0.0.1");
 
-/** Commands report failure the same way: the message, exit 1, no stack trace. */
 async function report(work: () => Promise<string[]>): Promise<void> {
   try {
     for (const line of await work()) console.log(line);
@@ -39,42 +37,49 @@ program
   .command("new")
   .description("Scaffold a run spec (no model call)")
   .argument("<name>", "run name")
-  .option("--tickets <ids>", "comma-separated ticket IDs")
-  .option("--mode <mode>", "attended or unattended", "attended")
-  .action((name, opts) => {
-    const args: string[] = [name];
-    if (opts.tickets) args.push("--tickets", opts.tickets);
-    if (opts.mode) args.push("--mode", opts.mode);
-    runNew(args);
+  .action((name) => {
+    runNew([name]);
   });
 
 program
   .command("start")
-  .description("Freeze the run spec and open a run")
+  .description("Validate the run spec and open a run")
   .argument("<spec>", "path to runspec.md")
   .option("--run <name>", "run name (defaults to the spec's run: key)")
-  .option("--repo <path>", "repo root (defaults to the spec's repo: key)")
+  .option("--repo <path>", "repo root")
   .action((spec, opts) =>
     report(async () => {
       const run = await runStart({ spec, ...opts });
-      return [...formatStartResult(run), "", ...(await advance(run))];
+      return formatStartResult(run);
+    })
+  );
+
+program
+  .command("advance")
+  .description("Check for new artifacts and advance the run")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((opts) =>
+    report(async () => {
+      const run = await selectRun(opts);
+      return advance(run);
     })
   );
 
 program
   .command("approve")
-  .description("Record approval of a gate and carry the run on")
-  .argument("<gate>", "gate ID, e.g. G1")
+  .description("Accept drift findings at the verify gate")
+  .argument("<gate>", "gate name (verify)")
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
   .action((gate, opts) => report(() => runApprove({ gate, ...opts })));
 
 program
   .command("reject")
-  .description("Reject a gate and re-enter at the artifact that was wrong")
-  .argument("<gate>", "gate ID, e.g. G3")
-  .argument("<reason>", "what was wrong — the phase gets this verbatim")
-  .requiredOption("--to <artifact>", "artifact to re-enter at, e.g. design or plan.json")
+  .description("Reject verify and re-enter at a phase")
+  .argument("<gate>", "gate name (verify)")
+  .argument("<reason>", "what was wrong")
+  .requiredOption("--to <phase>", "phase to re-enter at (plan, build)")
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
   .action((gate, reason, opts) => report(() => runReject({ gate, reason, ...opts })));
@@ -82,39 +87,16 @@ program
 program
   .command("show")
   .description("Print one of the run's artifacts")
-  .argument("<artifact>", "artifact path or stem, e.g. design or plan.json")
+  .argument("<artifact>", "artifact path, e.g. plan.json or verify.json")
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
   .action((artifact, opts) => report(() => runShow({ artifact, ...opts })));
 
 program
-  .command("trace")
-  .description("Render a unit's call path as path:line:col")
-  .argument("[unit]", "release unit, e.g. RU-1")
-  .option("--tree", "nested tree instead of the flat list")
-  .option("--run <name>", "run name (optional when the repo has one run)")
-  .option("--repo <path>", "repo root", ".")
-  .action((unit, opts) => report(() => runTrace({ unit, ...opts })));
-
-program
   .command("check")
-  .description("Advisory lint over a run spec's frontmatter and sections")
+  .description("Advisory lint over a run spec")
   .argument("<spec>", "path to the run spec to lint")
   .action((spec) => report(() => runCheck({ spec })));
-
-program
-  .command("resume")
-  .description("Carry the run forward from wherever it stopped")
-  .option("--retry", "re-attempt a phase that failed")
-  .option("--run <name>", "run name (optional when the repo has one run)")
-  .option("--repo <path>", "repo root", ".")
-  .action((opts) =>
-    report(async () => {
-      const run = await selectRun(opts);
-      const preamble = opts.retry ? await retry(run) : [];
-      return [...preamble, ...(await advance(run))];
-    })
-  );
 
 program
   .command("status")
