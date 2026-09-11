@@ -2,9 +2,15 @@ import { PHASES, nextPhase, phase } from "./phases.ts";
 import {
   hashArtifact,
   readArtifact,
+  readLedger,
+  readRetryState,
   readState,
+  writeLedger,
+  writeRetryState,
   writeState,
   type ArtifactRef,
+  type BuildLedger,
+  type LayerReport,
   type Run,
 } from "./store.ts";
 
@@ -124,6 +130,89 @@ export async function advance(run: Run): Promise<string[]> {
       lines.push("");
       lines.push(`\`valtay approve verify\` to accept, or fix and re-run the verify skill.`);
       return lines;
+    }
+
+    // Build phase: check ledger completeness before advancing
+    if (def.id === "build") {
+      const ledger = await readLedger(run);
+      if (ledger) {
+        const allLayers = ledger.units.flatMap((u) => u.layers);
+        const contested = allLayers.filter((l) => l.status === "contested");
+        const blocked = allLayers.filter((l) => l.status === "blocked");
+        const pending = allLayers.filter((l) => l.status === "pending");
+        const allDone = allLayers.length > 0 && allLayers.every((l) => l.status === "done");
+
+        if (contested.length > 0) {
+          const reasons = contested
+            .map((l) => `  ${l.unit}/${l.layer}: ${l.reason ?? "(no reason given)"}`)
+            .join("\n");
+          const note = `Build contested. ${contested.length} layer(s) contested by builder:\n${reasons}`;
+          await writeState(run, {
+            ...state,
+            status: "awaiting_gate",
+            note,
+          });
+          lines.push(`Build: ${contested.length} layer(s) contested.`);
+          for (const l of contested) {
+            lines.push(`  ${l.unit}/${l.layer}: ${l.reason ?? "(no reason given)"}`);
+          }
+          lines.push("");
+          lines.push("`valtay accept <unit> <layer>` or `valtay override <unit> <layer>` to resolve.");
+          return lines;
+        }
+
+        if (blocked.length > 0) {
+          const retryState = await readRetryState(run);
+          const attempt = retryState ? retryState.attempt : 0;
+          const max = run.meta.config.retries;
+
+          if (attempt < max) {
+            const nextAttempt = attempt + 1;
+            const blockedIds = blocked.map((l) => `${l.unit}/${l.layer}`);
+            const history = retryState?.history ?? [];
+            await writeRetryState(run, {
+              attempt: nextAttempt,
+              max,
+              history: [...history, { attempt: nextAttempt, blocked: blockedIds }],
+            });
+            await writeState(run, {
+              ...state,
+              status: "pending",
+              rerun: true,
+            });
+            lines.push(`Build: ${blocked.length} layer(s) blocked. Retry ${nextAttempt}/${max}.`);
+            for (const l of blocked) {
+              lines.push(`  ${l.unit}/${l.layer}: ${l.reason ?? "(no reason given)"}`);
+            }
+            return lines;
+          }
+
+          const note = `Build halted. ${blocked.length} layer(s) blocked after ${max} retry attempt(s).`;
+          await writeState(run, {
+            ...state,
+            status: "failed",
+            note,
+          });
+          lines.push(note);
+          for (const l of blocked) {
+            lines.push(`  ${l.unit}/${l.layer}: ${l.reason ?? "(no reason given)"}`);
+          }
+          return lines;
+        }
+
+        if (pending.length > 0) {
+          lines.push(`Build: ${pending.length} layer(s) still pending. Waiting for subagents.`);
+          await writeState(run, { ...state, status: "pending" });
+          return lines;
+        }
+
+        if (!allDone) {
+          // Ledger exists but has no layers — treat as no ledger
+          // Fall through to auto-advance
+        }
+        // allDone: fall through to auto-advance to verify
+      }
+      // No ledger: fall through to auto-advance (backwards compat)
     }
 
     // No gate (plan, build) — auto-advance

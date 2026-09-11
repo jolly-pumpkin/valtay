@@ -5,7 +5,7 @@ import { runNew } from "./commands/new.ts";
 import { runInit, formatInitResult } from "./commands/init.ts";
 import { runStart, formatStartResult } from "./commands/start.ts";
 import { runStatusLines, selectRun } from "./commands/status.ts";
-import { runApprove, runReject } from "./commands/gate.ts";
+import { runApprove, runReject, runOverride, runAcceptLayer } from "./commands/gate.ts";
 import { runShow } from "./commands/show.ts";
 import { runCheck } from "./commands/check.ts";
 import { runUpgrade, formatUpgradeResult } from "./commands/upgrade.ts";
@@ -81,6 +81,24 @@ program
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
   .action((gate, opts) => report(() => runApprove({ gate, ...opts })));
+
+program
+  .command("override")
+  .description("Force-build a contested layer (reset to pending)")
+  .argument("<unit>", "release unit id (e.g. RU-1)")
+  .argument("<layer>", "layer id (e.g. L2)")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((unit, layer, opts) => report(() => runOverride({ unit, layer, ...opts })));
+
+program
+  .command("accept")
+  .description("Accept a contestation — mark layer done by exemption")
+  .argument("<unit>", "release unit id (e.g. RU-1)")
+  .argument("<layer>", "layer id (e.g. L2)")
+  .option("--run <name>", "run name (optional when the repo has one run)")
+  .option("--repo <path>", "repo root", ".")
+  .action((unit, layer, opts) => report(() => runAcceptLayer({ unit, layer, ...opts })));
 
 program
   .command("reject")

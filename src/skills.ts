@@ -7,6 +7,7 @@ import composeFormatMd from "../assets/skills/valtay-compose/reference/format.md
 import composeExampleMd from "../assets/skills/valtay-compose/reference/example.md" with { type: "file" };
 import planSkillMd from "../assets/phases/plan/SKILL.md" with { type: "file" };
 import buildSkillMd from "../assets/phases/build/SKILL.md" with { type: "file" };
+import buildSubagentMd from "../assets/phases/build/SUBAGENT.md" with { type: "file" };
 import verifySkillMd from "../assets/phases/verify/SKILL.md" with { type: "file" };
 
 export interface SkillAsset {
@@ -58,6 +59,11 @@ const SHIPPED_PHASES: Record<PhaseId, string> = {
   verify: verifySkillMd,
 };
 
+/** Extra files shipped alongside the SKILL.md for a phase. */
+const PHASE_EXTRAS: Partial<Record<PhaseId, SkillAsset[]>> = {
+  build: [{ rel: "SUBAGENT.md", source: buildSubagentMd }],
+};
+
 export function skillOverridePath(id: PhaseId): string {
   return resolve(valtayHome(), "phases", id, "SKILL.md");
 }
@@ -70,7 +76,8 @@ export async function loadSkill(id: PhaseId): Promise<ShippedSkill> {
     throw new Error(`No phase skill for "${id}" — write assets/phases/${id}/SKILL.md`);
   }
 
-  return { name: phaseSkillName(id), files: [{ rel: "SKILL.md", source }] };
+  const extras = PHASE_EXTRAS[id] ?? [];
+  return { name: phaseSkillName(id), files: [{ rel: "SKILL.md", source }, ...extras] };
 }
 
 export async function shippedSkills(): Promise<ShippedSkill[]> {

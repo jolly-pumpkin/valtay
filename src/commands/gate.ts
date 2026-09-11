@@ -1,6 +1,15 @@
 import { advance, gateArtifacts } from "../run/orchestrator.ts";
 import { PHASES, phaseForGate } from "../run/phases.ts";
-import { appendApproval, hashArtifact, readState, writeState, type GateId } from "../run/store.ts";
+import {
+  appendApproval,
+  appendContestation,
+  hashArtifact,
+  readLedger,
+  readState,
+  writeLedger,
+  writeState,
+  type GateId,
+} from "../run/store.ts";
 import { selectRun, type RunSelector } from "./status.ts";
 
 export interface GateOptions extends RunSelector {
@@ -10,6 +19,11 @@ export interface GateOptions extends RunSelector {
 export interface RejectOptions extends GateOptions {
   to: string;
   reason: string;
+}
+
+export interface ContestationOptions extends RunSelector {
+  unit: string;
+  layer: string;
 }
 
 function parseGate(value: string): GateId {
@@ -88,5 +102,104 @@ export async function runReject(options: RejectOptions): Promise<string[]> {
   return [
     `verify rejected — re-entering at ${target.title}`,
     `  reason  ${options.reason}`,
+  ];
+}
+
+function findLayer(ledger: Awaited<ReturnType<typeof readLedger>>, unit: string, layer: string) {
+  if (!ledger) throw new Error("No ledger.json — nothing to resolve.");
+  const entry = ledger.units.find((u) => u.unit === unit);
+  if (!entry) throw new Error(`No unit "${unit}" in the ledger. Units: ${ledger.units.map((u) => u.unit).join(", ")}`);
+  const report = entry.layers.find((l) => l.layer === layer);
+  if (!report) throw new Error(`No layer "${layer}" in ${unit}. Layers: ${entry.layers.map((l) => l.layer).join(", ")}`);
+  return { entry, report };
+}
+
+export async function runOverride(options: ContestationOptions): Promise<string[]> {
+  const run = await selectRun(options);
+  const ledger = await readLedger(run);
+  const { report } = findLayer(ledger, options.unit, options.layer);
+
+  if (report.status !== "contested") {
+    throw new Error(`${options.unit}/${options.layer} is "${report.status}", not contested.`);
+  }
+
+  report.status = "pending";
+  report.reason = undefined;
+  report.suppressContestation = true;
+  await writeLedger(run, ledger!);
+
+  await appendContestation(run, {
+    ts: new Date().toISOString(),
+    unit: options.unit,
+    layer: options.layer,
+    decision: "override",
+  });
+
+  // Reset run to build phase so the layer can be re-dispatched
+  const state = await readState(run);
+  if (state.status === "awaiting_gate" || state.status === "failed") {
+    await writeState(run, {
+      ...state,
+      phase: "build",
+      status: "pending",
+      gate: undefined,
+      rerun: true,
+      note: `Override: ${options.unit}/${options.layer} reset to pending`,
+    });
+  }
+
+  return [
+    `${options.unit}/${options.layer} overridden — reset to pending.`,
+    `Run the build skill to re-attempt, then \`valtay advance\`.`,
+  ];
+}
+
+export async function runAcceptLayer(options: ContestationOptions): Promise<string[]> {
+  const run = await selectRun(options);
+  const ledger = await readLedger(run);
+  const { report } = findLayer(ledger, options.unit, options.layer);
+
+  if (report.status !== "contested") {
+    throw new Error(`${options.unit}/${options.layer} is "${report.status}", not contested.`);
+  }
+
+  report.status = "done";
+  report.reason = undefined;
+  await writeLedger(run, ledger!);
+
+  await appendContestation(run, {
+    ts: new Date().toISOString(),
+    unit: options.unit,
+    layer: options.layer,
+    decision: "accept",
+  });
+
+  // Check if all layers are now done and update state accordingly
+  const allLayers = ledger!.units.flatMap((u) => u.layers);
+  const allDone = allLayers.every((l) => l.status === "done");
+
+  const state = await readState(run);
+  if (allDone && (state.status === "awaiting_gate" || state.status === "failed")) {
+    await writeState(run, {
+      ...state,
+      phase: "build",
+      status: "pending",
+      gate: undefined,
+      note: `Accept: all contestations resolved`,
+    });
+  } else if (state.status === "awaiting_gate" || state.status === "failed") {
+    await writeState(run, {
+      ...state,
+      phase: "build",
+      status: "pending",
+      gate: undefined,
+      rerun: true,
+      note: `Accept: ${options.unit}/${options.layer} exempted`,
+    });
+  }
+
+  return [
+    `${options.unit}/${options.layer} accepted — marked done by exemption.`,
+    ...(allDone ? ["`valtay advance` to continue."] : ["Other layers remain. Resolve them or run the build skill."]),
   ];
 }

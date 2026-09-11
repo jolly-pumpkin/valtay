@@ -3,10 +3,19 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { runStart } from "./start.ts";
-import { runApprove, runReject } from "./gate.ts";
+import { runApprove, runReject, runOverride, runAcceptLayer } from "./gate.ts";
 import { runShow } from "./show.ts";
 import { runStatusLines } from "./status.ts";
-import { findRun, readApprovals, readState, writeArtifact } from "../run/store.ts";
+import {
+  findRun,
+  readApprovals,
+  readContestations,
+  readLedger,
+  readState,
+  writeArtifact,
+  writeLedger,
+  type BuildLedger,
+} from "../run/store.ts";
 
 let root: string;
 let repo: string;
@@ -123,6 +132,96 @@ describe("reject", () => {
     await expect(
       runReject({ repo, gate: "verify", to: "build", reason: "  " })
     ).rejects.toThrow(/needs a reason/);
+  });
+});
+
+async function startWithContestedLedger() {
+  const path = resolve(repo, "runspec.md");
+  await writeFile(path, SPEC);
+  const run = await runStart({ spec: path, repo });
+
+  await writeArtifact(run, "plan.md", '{"epic":"check","release_units":[]}');
+  await writeArtifact(run, "build.md", "- partial");
+
+  const ledger: BuildLedger = {
+    units: [
+      {
+        unit: "RU-1",
+        layers: [
+          { unit: "RU-1", layer: "L1", status: "done", files: ["src/a.ts"] },
+          { unit: "RU-1", layer: "L2", status: "contested", reason: "unnecessary" },
+        ],
+      },
+    ],
+    updated: "",
+  };
+  await writeLedger(run, ledger);
+
+  // Advance to get to awaiting_gate
+  const { advance } = await import("../run/orchestrator.ts");
+  await advance(run);
+
+  return run;
+}
+
+describe("override", () => {
+  test("resets a contested layer to pending", async () => {
+    await startWithContestedLedger();
+
+    const lines = await runOverride({ repo, unit: "RU-1", layer: "L2" });
+    expect(lines.some((l) => l.includes("overridden"))).toBe(true);
+
+    const run = await findRun(repo);
+    const ledger = await readLedger(run);
+    expect(ledger!.units[0].layers[1].status).toBe("pending");
+    expect(ledger!.units[0].layers[1].suppressContestation).toBe(true);
+
+    const contestations = await readContestations(run);
+    expect(contestations).toHaveLength(1);
+    expect(contestations[0].decision).toBe("override");
+
+    const state = await readState(run);
+    expect(state.phase).toBe("build");
+    expect(state.rerun).toBe(true);
+  });
+
+  test("refuses to override a non-contested layer", async () => {
+    await startWithContestedLedger();
+    await expect(runOverride({ repo, unit: "RU-1", layer: "L1" })).rejects.toThrow(/not contested/);
+  });
+
+  test("refuses unknown unit", async () => {
+    await startWithContestedLedger();
+    await expect(runOverride({ repo, unit: "RU-99", layer: "L1" })).rejects.toThrow(/No unit/);
+  });
+});
+
+describe("accept layer", () => {
+  test("marks a contested layer done by exemption", async () => {
+    await startWithContestedLedger();
+
+    const lines = await runAcceptLayer({ repo, unit: "RU-1", layer: "L2" });
+    expect(lines.some((l) => l.includes("accepted"))).toBe(true);
+
+    const run = await findRun(repo);
+    const ledger = await readLedger(run);
+    expect(ledger!.units[0].layers[1].status).toBe("done");
+
+    const contestations = await readContestations(run);
+    expect(contestations).toHaveLength(1);
+    expect(contestations[0].decision).toBe("accept");
+  });
+
+  test("reports all done when the last contested layer is accepted", async () => {
+    await startWithContestedLedger();
+
+    const lines = await runAcceptLayer({ repo, unit: "RU-1", layer: "L2" });
+    expect(lines.some((l) => l.includes("valtay advance"))).toBe(true);
+  });
+
+  test("refuses to accept a non-contested layer", async () => {
+    await startWithContestedLedger();
+    await expect(runAcceptLayer({ repo, unit: "RU-1", layer: "L1" })).rejects.toThrow(/not contested/);
   });
 });
 

@@ -6,20 +6,28 @@ import { resolveConfig } from "../config.ts";
 import { parseRunspec, sha256 } from "../runspec.ts";
 import {
   appendApproval,
+  appendContestation,
   appendManifest,
   createRun,
   findRun,
   isApproved,
   latestDecision,
   loadRun,
+  readContestations,
+  readLedger,
   readManifest,
+  readRetryState,
   readState,
   runDir,
   staleArtifacts,
   writeArtifact,
+  writeLedger,
+  writeRetryState,
   writeState,
   type ApprovalRecord,
+  type BuildLedger,
   type ManifestRecord,
+  type RetryState,
   type Run,
 } from "./store.ts";
 
@@ -172,6 +180,92 @@ describe("manifest", () => {
     const manifest = await readManifest(run);
     expect(manifest).toHaveLength(2);
     expect(manifest.map((r) => r.phase)).toEqual(["plan", "build"]);
+  });
+});
+
+describe("ledger", () => {
+  test("round-trips through write and read", async () => {
+    const run = await newRun();
+    const ledger: BuildLedger = {
+      units: [
+        {
+          unit: "RU-1",
+          layers: [
+            { unit: "RU-1", layer: "L1", status: "done", files: ["src/foo.ts"] },
+            { unit: "RU-1", layer: "L2", status: "blocked", reason: "missing dep" },
+          ],
+          branch: "valtay/missing-RU-1",
+        },
+      ],
+      updated: "",
+    };
+
+    await writeLedger(run, ledger);
+    const read = await readLedger(run);
+
+    expect(read).not.toBeNull();
+    expect(read!.units).toHaveLength(1);
+    expect(read!.units[0].layers).toHaveLength(2);
+    expect(read!.units[0].layers[0].status).toBe("done");
+    expect(read!.units[0].layers[1].reason).toBe("missing dep");
+    expect(Date.parse(read!.updated)).not.toBeNaN();
+  });
+
+  test("returns null when no ledger exists", async () => {
+    const run = await newRun();
+    expect(await readLedger(run)).toBeNull();
+  });
+});
+
+describe("retry state", () => {
+  test("round-trips through write and read", async () => {
+    const run = await newRun();
+    const state: RetryState = {
+      attempt: 1,
+      max: 2,
+      history: [{ attempt: 1, blocked: ["RU-1/L2"] }],
+    };
+
+    await writeRetryState(run, state);
+    const read = await readRetryState(run);
+
+    expect(read).toEqual(state);
+  });
+
+  test("returns null when no retry state exists", async () => {
+    const run = await newRun();
+    expect(await readRetryState(run)).toBeNull();
+  });
+});
+
+describe("contestations", () => {
+  test("appends records and reads them back in order", async () => {
+    const run = await newRun();
+
+    await appendContestation(run, {
+      ts: "2026-09-11T00:00:00Z",
+      unit: "RU-1",
+      layer: "L2",
+      decision: "accept",
+      reason: "builder was right",
+    });
+
+    await appendContestation(run, {
+      ts: "2026-09-11T00:01:00Z",
+      unit: "RU-2",
+      layer: "L1",
+      decision: "override",
+    });
+
+    const records = await readContestations(run);
+    expect(records).toHaveLength(2);
+    expect(records[0].decision).toBe("accept");
+    expect(records[1].decision).toBe("override");
+  });
+
+  test("returns empty array when no contestations exist", async () => {
+    const run = await newRun();
+    expect(await readContestations(run)).toEqual([]);
   });
 });
 

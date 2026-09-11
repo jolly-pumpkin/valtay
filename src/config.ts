@@ -13,6 +13,7 @@ export interface ResolvedConfig {
   default: PhaseBinding;
   phases: Partial<Record<PhaseId, Partial<PhaseBinding>>>;
   run?: { max_units?: number; max_layers?: number };
+  retries: number;
 }
 
 /**
@@ -62,7 +63,9 @@ export function resolveConfig(spec: Runspec): ResolvedConfig {
     };
   }
 
-  return { default: defaultBinding, phases, run };
+  const retries = typeof fm["retries"] === "number" ? fm["retries"] : 1;
+
+  return { default: defaultBinding, phases, run, retries };
 }
 
 /** Resolve the binding for a specific phase, with defaults filled in. */

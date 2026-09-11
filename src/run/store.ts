@@ -199,6 +199,84 @@ export async function readManifest(run: Run): Promise<ManifestRecord[]> {
   return readJsonl<ManifestRecord>(resolve(run.dir, "manifest.jsonl"));
 }
 
+// --- Build ledger types ---
+
+export type LayerStatus = "pending" | "done" | "blocked" | "contested";
+
+export interface LayerReport {
+  /** Release unit id, e.g. "RU-1" */
+  unit: string;
+  /** Layer id within that unit, e.g. "L1" */
+  layer: string;
+  status: LayerStatus;
+  /** Required when blocked or contested. The builder's own words. */
+  reason?: string;
+  /** Files the builder actually touched (for done layers) */
+  files?: string[];
+  /** Set by `valtay override` — the subagent must implement, not contest. */
+  suppressContestation?: boolean;
+}
+
+export interface UnitEntry {
+  unit: string;
+  layers: LayerReport[];
+  /** Subagent worktree branch name, if applicable */
+  branch?: string;
+}
+
+export interface BuildLedger {
+  units: UnitEntry[];
+  updated: string; // ISO 8601
+}
+
+export interface RetryState {
+  attempt: number;
+  max: number;
+  /** Layer ids that were blocked on each attempt */
+  history: Array<{ attempt: number; blocked: string[] }>;
+}
+
+export type ContestationDecision = "override" | "accept";
+
+export interface ContestationRecord {
+  ts: string;
+  unit: string;
+  layer: string;
+  decision: ContestationDecision;
+  reason?: string;
+}
+
+// --- Build ledger IO ---
+
+export async function readLedger(run: Run): Promise<BuildLedger | null> {
+  const file = Bun.file(resolve(run.dir, "ledger.json"));
+  if (!(await file.exists())) return null;
+  return (await file.json()) as BuildLedger;
+}
+
+export async function writeLedger(run: Run, ledger: BuildLedger): Promise<void> {
+  const stamped = { ...ledger, updated: new Date().toISOString() };
+  await Bun.write(resolve(run.dir, "ledger.json"), `${JSON.stringify(stamped, null, 2)}\n`);
+}
+
+export async function readRetryState(run: Run): Promise<RetryState | null> {
+  const file = Bun.file(resolve(run.dir, "retry.json"));
+  if (!(await file.exists())) return null;
+  return (await file.json()) as RetryState;
+}
+
+export async function writeRetryState(run: Run, state: RetryState): Promise<void> {
+  await Bun.write(resolve(run.dir, "retry.json"), `${JSON.stringify(state, null, 2)}\n`);
+}
+
+export async function appendContestation(run: Run, record: ContestationRecord): Promise<void> {
+  await appendJsonl(resolve(run.dir, "contestations.jsonl"), record);
+}
+
+export async function readContestations(run: Run): Promise<ContestationRecord[]> {
+  return readJsonl<ContestationRecord>(resolve(run.dir, "contestations.jsonl"));
+}
+
 export async function appendApproval(run: Run, record: ApprovalRecord): Promise<void> {
   await appendJsonl(resolve(run.dir, "approvals.jsonl"), record);
 }
