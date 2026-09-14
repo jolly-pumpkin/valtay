@@ -205,9 +205,9 @@ describe("ledger", () => {
 
     expect(read).not.toBeNull();
     expect(read!.units).toHaveLength(1);
-    expect(read!.units[0].layers).toHaveLength(2);
-    expect(read!.units[0].layers[0].status).toBe("done");
-    expect(read!.units[0].layers[1].reason).toBe("missing dep");
+    expect(read!.units[0]!.layers).toHaveLength(2);
+    expect(read!.units[0]!.layers[0]!.status).toBe("done");
+    expect(read!.units[0]!.layers[1]!.reason).toBe("missing dep");
     expect(Date.parse(read!.updated)).not.toBeNaN();
   });
 
@@ -259,8 +259,8 @@ describe("contestations", () => {
 
     const records = await readContestations(run);
     expect(records).toHaveLength(2);
-    expect(records[0].decision).toBe("accept");
-    expect(records[1].decision).toBe("override");
+    expect(records[0]!.decision).toBe("accept");
+    expect(records[1]!.decision).toBe("override");
   });
 
   test("returns empty array when no contestations exist", async () => {

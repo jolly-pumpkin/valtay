@@ -1,6 +1,7 @@
 import { PHASES, nextPhase, phase } from "./phases.ts";
 import {
   hashArtifact,
+  isApproved,
   readArtifact,
   readLedger,
   readRetryState,
@@ -73,7 +74,6 @@ export async function advance(run: Run): Promise<string[]> {
 
     if (!artifactExists) {
       lines.push(`Waiting for ${def.title} artifact: ${def.output}`);
-      lines.push(`Run the ${def.id} skill in your coding session, then \`valtay advance\`.`);
       await writeState(run, { ...state, status: "pending" });
       return lines;
     }
@@ -110,7 +110,19 @@ export async function advance(run: Run): Promise<string[]> {
         return lines;
       }
 
-      // Drift — park and show findings
+      // Drift — check if already approved before parking
+      if (await isApproved(run, "verify")) {
+        lines.push("Verify: drift detected but approved. Completing run.");
+        await writeState(run, {
+          ...state,
+          status: "complete",
+          completed: [...state.completed, def.id],
+        });
+        lines.push("Run complete.");
+        return lines;
+      }
+
+      // Not approved — park and show findings
       const driftCount = result.findings?.filter((f) => f.severity === "drift").length ?? 0;
       const note = `Verify found ${driftCount} drift finding(s). Review with \`valtay show verify.json\`, then \`valtay approve verify\` or fix and re-verify.`;
 
@@ -128,7 +140,7 @@ export async function advance(run: Run): Promise<string[]> {
         }
       }
       lines.push("");
-      lines.push(`\`valtay approve verify\` to accept, or fix and re-run the verify skill.`);
+      lines.push(`\`valtay approve verify\` to accept, or fix and re-verify.`);
       return lines;
     }
 

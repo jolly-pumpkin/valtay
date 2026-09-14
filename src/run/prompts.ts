@@ -6,6 +6,8 @@ export interface PromptContext {
   runDir: string;      // absolute path to .valtay/runs/<name>
   repoRoot: string;    // absolute path to repo
   runspecPath: string;  // path to runspec.md in the run dir
+  baseCommit?: string;           // pre-build HEAD for verify diffs
+  integrationBranch?: string;    // runner-owned branch name
 }
 
 const ASSETS_DIR = resolve(import.meta.dir, "../../assets");
@@ -51,11 +53,17 @@ export async function buildPhasePrompt(phase: PhaseId, ctx: PromptContext): Prom
 
   const body = await loadTemplate(templatePath);
 
-  return `You are running phase "${phase}" of Valtay run "${ctx.runName}".
+  const header = [
+    `You are running phase "${phase}" of Valtay run "${ctx.runName}".`,
+    "",
+    `Run directory: ${ctx.runDir}`,
+    `Repo root: ${ctx.repoRoot}`,
+    `Runspec: ${ctx.runspecPath}`,
+  ];
+  if (ctx.baseCommit) header.push(`Base commit: ${ctx.baseCommit}`);
+  if (ctx.integrationBranch) header.push(`Integration branch: ${ctx.integrationBranch}`);
 
-Run directory: ${ctx.runDir}
-Repo root: ${ctx.repoRoot}
-Runspec: ${ctx.runspecPath}
+  return `${header.join("\n")}
 
 ---
 

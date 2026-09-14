@@ -3,6 +3,8 @@ export interface DispatchOpts {
   cwd: string;
   /** Model name (e.g. "sonnet", "opus", "gpt-5.4-mini") */
   model: string;
+  /** Whether the phase may write files (build = true, plan/verify = false) */
+  write: boolean;
   /** Optional effort level */
   effort?: string;
   /** Environment variables to merge with process.env */
@@ -21,20 +23,65 @@ export interface Provider {
   dispatch(prompt: string, opts: DispatchOpts): Promise<DispatchResult>;
 }
 
-export function buildClaudeArgs(prompt: string, opts: DispatchOpts): string[] {
-  const args = ["claude", "-p", prompt, "--model", opts.model];
+/**
+ * Build claude CLI args. Prompt goes on stdin (trailing `-` is not needed;
+ * we pipe to stdin directly). Per design.md §7.2:
+ * - Read-only: --permission-mode dontAsk --disallowed-tools "Edit Write NotebookEdit"
+ * - Write:     --permission-mode acceptEdits --allowed-tools "Bash Read Write Edit NotebookEdit Glob Grep"
+ */
+export function buildClaudeArgs(opts: DispatchOpts): string[] {
+  const args = ["claude", "-p", "--output-format", "json", "--model", opts.model];
   if (opts.effort) args.push("--effort", opts.effort);
+
+  if (opts.write) {
+    args.push(
+      "--permission-mode", "acceptEdits",
+      "--allowed-tools", "Bash Read Write Edit NotebookEdit Glob Grep",
+    );
+  } else {
+    args.push(
+      "--permission-mode", "dontAsk",
+      "--disallowed-tools", "Edit Write NotebookEdit",
+    );
+  }
+
   return args;
 }
 
-export function buildCodexArgs(prompt: string, opts: DispatchOpts): string[] {
-  const args = ["codex", "-q", prompt, "--model", opts.model];
+/**
+ * Build codex CLI args. Per design.md §7.2:
+ * - Read-only: --sandbox read-only
+ * - Write:     --sandbox workspace-write
+ * Prompt goes on stdin via trailing `-`.
+ */
+export function buildCodexArgs(opts: DispatchOpts): string[] {
+  const sandbox = opts.write ? "workspace-write" : "read-only";
+  const args = [
+    "codex", "exec",
+    "--json",
+    "--skip-git-repo-check",
+    "--model", opts.model,
+    "--cd", opts.cwd,
+    "--sandbox", sandbox,
+  ];
+  if (opts.effort) args.push("-c", `model_reasoning_effort=${opts.effort}`);
+  args.push("-"); // prompt on stdin
   return args;
 }
 
-async function spawnProvider(args: string[], opts: DispatchOpts): Promise<DispatchResult> {
+/**
+ * Spawn a provider CLI with the prompt piped to stdin.
+ * Both claude and codex accept the prompt on stdin to avoid argv length limits
+ * and the variadic-flag trap (design.md §7.2).
+ */
+async function spawnProvider(
+  args: string[],
+  prompt: string,
+  opts: DispatchOpts,
+): Promise<DispatchResult> {
   const proc = Bun.spawn(args, {
     cwd: opts.cwd,
+    stdin: new Blob([prompt]),
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, ...opts.env },
@@ -53,7 +100,7 @@ function claudeProvider(): Provider {
   return {
     name: "claude",
     dispatch(prompt, opts) {
-      return spawnProvider(buildClaudeArgs(prompt, opts), opts);
+      return spawnProvider(buildClaudeArgs(opts), prompt, opts);
     },
   };
 }
@@ -62,7 +109,7 @@ function codexProvider(): Provider {
   return {
     name: "codex",
     dispatch(prompt, opts) {
-      return spawnProvider(buildCodexArgs(prompt, opts), opts);
+      return spawnProvider(buildCodexArgs(opts), prompt, opts);
     },
   };
 }

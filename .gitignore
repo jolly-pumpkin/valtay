@@ -113,9 +113,5 @@ dist
 .tern-port
 
 
-# Docs
-docs/
-
-# Valtay local state
+# Valtay local state (run artifacts are per-machine)
 .valtay/
-valtay.toml

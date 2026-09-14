@@ -4,6 +4,7 @@ description: >-
   Check what was built against what the runspec asked for. Report drift —
   places the implementation diverged from the design. Dispatched by the runner
   after the build phase completes.
+disable-model-invocation: true
 ---
 
 # Role: verifier

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "bun run src/cli.ts",
-    "test": "bun test"
+    "test": "tsc --noEmit && bun test"
   },
   "devDependencies": {
     "@types/bun": "latest"

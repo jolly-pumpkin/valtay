@@ -10,9 +10,7 @@ import { HOST_BY_MARKER } from "./detect.ts";
 
 describe("skill roots", () => {
   test("each host family looks somewhere different", () => {
-    // Verified against the binaries: claude-code discovers `.claude/skills/`, and
-    // codex-cli 0.153.3's loader reads `.codex/skills/<name>/SKILL.md`.
-    expect(skillRootFor("claude-code")).toBe(".claude/skills");
+    expect(skillRootFor("claude")).toBe(".claude/skills");
     expect(skillRootFor("codex")).toBe(".codex/skills");
   });
 
@@ -21,26 +19,25 @@ describe("skill roots", () => {
     // phase would answer the payload conversationally — the expensive, silent
     // failure the pre-flight check exists to prevent.
     expect(() => skillRootFor("gemini")).toThrow(/No skill root for adapter "gemini"/);
-    expect(() => skillRootFor("gemini")).toThrow(/claude-code, codex/);
+    expect(() => skillRootFor("gemini")).toThrow(/claude, codex/);
   });
 
   test("the skill path follows the adapter it will be loaded by", () => {
-    const name = phaseSkillName("research");
+    const name = phaseSkillName("plan");
 
-    expect(skillRelDir(name, "codex")).toBe(".codex/skills/valtay-research");
-    expect(installedSkillPath("/repo", "research", "codex")).toBe(
-      "/repo/.codex/skills/valtay-research/SKILL.md"
+    expect(skillRelDir(name, "codex")).toBe(".codex/skills/valtay-plan");
+    expect(installedSkillPath("/repo", "plan", "codex")).toBe(
+      "/repo/.codex/skills/valtay-plan/SKILL.md"
     );
-    expect(installedSkillPath("/repo", "research", "claude-code")).toBe(
-      "/repo/.claude/skills/valtay-research/SKILL.md"
+    expect(installedSkillPath("/repo", "plan", "claude")).toBe(
+      "/repo/.claude/skills/valtay-plan/SKILL.md"
     );
   });
 
-  test("callers that predate a second host still get claude-code", () => {
-    // The default keeps every pre-existing call site meaning what it meant.
-    expect(skillRelDir("valtay-research")).toBe(".claude/skills/valtay-research");
-    expect(installedSkillPath("/repo", "research")).toBe(
-      "/repo/.claude/skills/valtay-research/SKILL.md"
+  test("callers that predate a second host still get claude", () => {
+    expect(skillRelDir("valtay-plan")).toBe(".claude/skills/valtay-plan");
+    expect(installedSkillPath("/repo", "plan")).toBe(
+      "/repo/.claude/skills/valtay-plan/SKILL.md"
     );
   });
 

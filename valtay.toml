@@ -1,0 +1,21 @@
+# valtay.toml - repo config. See docs/design.md section 20.
+# Precedence: runspec frontmatter -> ./valtay.toml -> ~/.valtay/config.toml -> built-in
+
+[hosts.claude-code]
+bin = "claude"
+adapter = "claude-code"
+
+[roles.default]
+host = "claude-code"
+model = "sonnet"
+effort = "medium"
+timeout = "10m"
+# TODO: per-role overrides — see docs/design.md §6.1
+
+[trace]
+tier = "agent"  # TODO: runtime | static | agent
+command = ""    # TODO: trace command, with a {scenario} placeholder
+
+[layers]
+# TODO: map path globs to layer names
+# "src/ui/**" = "ui"

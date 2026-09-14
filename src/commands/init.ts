@@ -164,7 +164,7 @@ export function skillsDirsFor(root: string, hosts: HostSpec[]): string[] {
  * Installs the shipped skills into each of `skillsDirs`.
  *
  * Gated on any known agent-config marker rather than on the detected hosts, because
- * `detectHosts` falls back to claude-code for every repo and so would install into
+ * `detectHosts` falls back to claude for every repo and so would install into
  * projects that use neither. Before this ticket the gate was `.claude/` alone, which
  * left a codex-only project with no phase skills at all — an adapter that could not
  * find its phase.

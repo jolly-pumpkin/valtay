@@ -53,10 +53,9 @@ describe("upgrade", () => {
     const result = await runUpgrade({ path: repo });
     const added = result.reports.filter((r) => r.outcome === "added");
 
-    // plan, build, verify should be added
-    expect(added.length).toBe(3);
+    // plan and verify should be added (build has no installed skill)
+    expect(added.length).toBe(2);
     expect(added.map((r) => r.name).sort()).toEqual([
-      "valtay-build",
       "valtay-plan",
       "valtay-verify",
     ]);

@@ -19,7 +19,7 @@ export interface HostSpec {
  * produces a config no phase can run under.
  */
 export const HOST_BY_MARKER: Record<Marker, HostSpec> = {
-  ".claude/": { name: "claude-code", bin: "claude", adapter: "claude-code" },
+  ".claude/": { name: "claude", bin: "claude", adapter: "claude" },
   "codex.json": { name: "codex", bin: "codex", adapter: "codex" },
   ".codex/": { name: "codex", bin: "codex", adapter: "codex" },
 };

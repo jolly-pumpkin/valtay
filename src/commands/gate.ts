@@ -150,7 +150,7 @@ export async function runOverride(options: ContestationOptions): Promise<string[
 
   return [
     `${options.unit}/${options.layer} overridden — reset to pending.`,
-    `Run the build skill to re-attempt, then \`valtay advance\`.`,
+    `\`valtay run <spec>\` to re-dispatch.`,
   ];
 }
 
@@ -200,6 +200,6 @@ export async function runAcceptLayer(options: ContestationOptions): Promise<stri
 
   return [
     `${options.unit}/${options.layer} accepted — marked done by exemption.`,
-    ...(allDone ? ["`valtay advance` to continue."] : ["Other layers remain. Resolve them or run the build skill."]),
+    ...(allDone ? ["`valtay run <spec>` to continue."] : ["Other layers remain. Resolve them, then `valtay run <spec>`."]),
   ];
 }

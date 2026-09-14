@@ -3,6 +3,20 @@ import { homedir } from "os";
 import type { Runspec } from "./runspec.ts";
 import type { PhaseId } from "./run/store.ts";
 
+/** Extract top-level `key = "value"` pairs from a TOML file. Ignores tables. */
+function parseSimpleToml(content: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  let inTable = false;
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("[")) { inTable = true; continue; }
+    if (inTable) continue; // skip table contents
+    const match = trimmed.match(/^(\w+)\s*=\s*"([^"]*)"/);
+    if (match) result[match[1]!] = match[2]!;
+  }
+  return result;
+}
+
 export interface PhaseBinding {
   host: string;
   model: string;
@@ -12,7 +26,6 @@ export interface PhaseBinding {
 export interface ResolvedConfig {
   default: PhaseBinding;
   phases: Partial<Record<PhaseId, Partial<PhaseBinding>>>;
-  run?: { max_units?: number; max_layers?: number };
   retries: number;
 }
 
@@ -24,16 +37,24 @@ export function valtayHome(): string {
 }
 
 /**
- * Resolves config from the runspec frontmatter only.
- * No valtay.toml merge for MVP.
+ * Resolves config. Precedence: runspec frontmatter → valtay.toml → built-in defaults.
  */
-export function resolveConfig(spec: Runspec): ResolvedConfig {
+export function resolveConfig(spec: Runspec, repoRoot?: string): ResolvedConfig {
   const fm = spec.frontmatter;
 
+  // Read valtay.toml as fallback if repoRoot provided
+  let toml: Record<string, string> = {};
+  if (repoRoot) {
+    try {
+      const content = require("fs").readFileSync(resolve(repoRoot, "valtay.toml"), "utf-8");
+      toml = parseSimpleToml(content);
+    } catch { /* no toml or unreadable — fine */ }
+  }
+
   const defaultBinding: PhaseBinding = {
-    host: typeof fm["host"] === "string" ? fm["host"] : "claude",
-    model: typeof fm["model"] === "string" ? fm["model"] : "sonnet",
-    ...(typeof fm["effort"] === "string" ? { effort: fm["effort"] } : {}),
+    host: typeof fm["host"] === "string" ? fm["host"] : (toml["host"] ?? "claude"),
+    model: typeof fm["model"] === "string" ? fm["model"] : (toml["model"] ?? "sonnet"),
+    ...(typeof fm["effort"] === "string" ? { effort: fm["effort"] } : (toml["effort"] ? { effort: toml["effort"] } : {})),
   };
 
   const phases: ResolvedConfig["phases"] = {};
@@ -53,19 +74,9 @@ export function resolveConfig(spec: Runspec): ResolvedConfig {
     }
   }
 
-  let run: ResolvedConfig["run"];
-  const runRaw = fm["run_budget"] ?? fm["run"];
-  if (runRaw && typeof runRaw === "object" && !Array.isArray(runRaw)) {
-    const r = runRaw as Record<string, unknown>;
-    run = {
-      ...(typeof r["max_units"] === "number" ? { max_units: r["max_units"] } : {}),
-      ...(typeof r["max_layers"] === "number" ? { max_layers: r["max_layers"] } : {}),
-    };
-  }
-
   const retries = typeof fm["retries"] === "number" ? fm["retries"] : 1;
 
-  return { default: defaultBinding, phases, run, retries };
+  return { default: defaultBinding, phases, retries };
 }
 
 /** Resolve the binding for a specific phase, with defaults filled in. */

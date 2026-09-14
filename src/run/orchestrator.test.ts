@@ -6,7 +6,9 @@ import { resolveConfig } from "../config.ts";
 import { parseRunspec } from "../runspec.ts";
 import { advance } from "./orchestrator.ts";
 import {
+  appendApproval,
   createRun,
+  hashArtifact,
   readState,
   readRetryState,
   writeArtifact,
@@ -15,6 +17,7 @@ import {
   type BuildLedger,
   type Run,
 } from "./store.ts";
+import { gateArtifacts } from "./orchestrator.ts";
 
 let root: string;
 let repo: string;
@@ -285,6 +288,37 @@ describe("advance", () => {
     const state = await readState(run);
     expect(state.phase).toBe("verify");
     expect(state.completed).toContain("build");
+  });
+
+  test("drift verify with approval record completes the run", async () => {
+    const run = await newRun();
+    await writeArtifact(run, "plan.md", '{"epic":"test"}');
+    await writeArtifact(run, "build.md", "- done");
+    await writeArtifact(
+      run,
+      "verify.json",
+      JSON.stringify({
+        status: "drift",
+        findings: [
+          { what: "Player.health", actual: "missing", file: "src/player.ts", severity: "drift" },
+        ],
+      })
+    );
+
+    // Record an approval before advancing
+    const artifacts = await gateArtifacts(run);
+    await appendApproval(run, {
+      ts: new Date().toISOString(),
+      gate: "verify",
+      decision: "approve",
+      artifacts,
+    });
+
+    const lines = await advance(run);
+    expect(lines.some((l) => l.includes("Run complete"))).toBe(true);
+
+    const state = await readState(run);
+    expect(state.status).toBe("complete");
   });
 
   test("invalid verify JSON fails the run", async () => {

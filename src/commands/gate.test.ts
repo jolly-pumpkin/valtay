@@ -80,6 +80,10 @@ describe("approve", () => {
     const run = await findRun(repo);
     const approval = (await readApprovals(run)).at(-1)!;
     expect(approval.decision).toBe("approve");
+
+    // Defect 1.1: approve must actually complete the run
+    const state = await readState(run);
+    expect(state.status).toBe("complete");
   });
 
   test("refuses a gate that is not verify", async () => {
@@ -111,6 +115,7 @@ describe("reject", () => {
 
     const state = await readState(await findRun(repo));
     expect(state.phase).toBe("build");
+    expect(state.status).toBe("pending");
     expect(state.rerun).toBe(true);
   });
 
@@ -173,15 +178,16 @@ describe("override", () => {
 
     const run = await findRun(repo);
     const ledger = await readLedger(run);
-    expect(ledger!.units[0].layers[1].status).toBe("pending");
-    expect(ledger!.units[0].layers[1].suppressContestation).toBe(true);
+    expect(ledger!.units[0]!.layers[1]!.status).toBe("pending");
+    expect(ledger!.units[0]!.layers[1]!.suppressContestation).toBe(true);
 
     const contestations = await readContestations(run);
     expect(contestations).toHaveLength(1);
-    expect(contestations[0].decision).toBe("override");
+    expect(contestations[0]!.decision).toBe("override");
 
     const state = await readState(run);
     expect(state.phase).toBe("build");
+    expect(state.status).toBe("pending");
     expect(state.rerun).toBe(true);
   });
 
@@ -205,18 +211,18 @@ describe("accept layer", () => {
 
     const run = await findRun(repo);
     const ledger = await readLedger(run);
-    expect(ledger!.units[0].layers[1].status).toBe("done");
+    expect(ledger!.units[0]!.layers[1]!.status).toBe("done");
 
     const contestations = await readContestations(run);
     expect(contestations).toHaveLength(1);
-    expect(contestations[0].decision).toBe("accept");
+    expect(contestations[0]!.decision).toBe("accept");
   });
 
   test("reports all done when the last contested layer is accepted", async () => {
     await startWithContestedLedger();
 
     const lines = await runAcceptLayer({ repo, unit: "RU-1", layer: "L2" });
-    expect(lines.some((l) => l.includes("valtay advance"))).toBe(true);
+    expect(lines.some((l) => l.includes("valtay run"))).toBe(true);
   });
 
   test("refuses to accept a non-contested layer", async () => {

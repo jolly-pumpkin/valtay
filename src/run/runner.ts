@@ -5,7 +5,9 @@ import { resolveConfig, bindingFor } from "../config.ts";
 import { createWorktree, removeWorktree, worktreePath, git } from "../worktree.ts";
 import {
   createRun,
+  loadRun,
   readState,
+  runDir,
   writeState,
   readArtifact,
   writeArtifact,
@@ -15,9 +17,10 @@ import {
   type LayerReport,
   type BuildLedger,
 } from "./store.ts";
+import { pathExists } from "../detect.ts";
 import { advance } from "./orchestrator.ts";
 import { providerFor, type Provider } from "./provider.ts";
-import { parsePlanUnits, topoSortWaves, parseReport } from "./plan-parser.ts";
+import { parsePlanUnits, topoSortWaves, parseReport, type PlanUnit } from "./plan-parser.ts";
 import { buildPhasePrompt, buildSubagentPrompt, type PromptContext } from "./prompts.ts";
 
 export interface VerifyFinding {
@@ -42,11 +45,35 @@ export interface RunnerOpts {
   providerFactory?: (host: string) => Provider;
 }
 
+/** Clean up unit worktrees and branches after build completes. Keep integration branch. */
+async function cleanupWorktrees(
+  repoRoot: string,
+  wtPaths: string[],
+  runName: string,
+  units: PlanUnit[],
+): Promise<void> {
+  for (const wtPath of wtPaths) {
+    try { await removeWorktree(repoRoot, wtPath); } catch { /* best effort */ }
+  }
+  for (const unit of units) {
+    const branch = `valtay/${runName}-${unit.id}`;
+    await git(repoRoot, ["branch", "-D", branch]); // best effort
+  }
+}
+
 export async function run(opts: RunnerOpts): Promise<RunResult> {
   const { spec, repoRoot, runName } = opts;
   const factory = opts.providerFactory ?? providerFor;
-  const config = resolveConfig(spec);
-  const theRun = await createRun(repoRoot, runName, spec, config);
+  const config = resolveConfig(spec, repoRoot);
+
+  // Re-entrant: load existing run or create a new one
+  const dir = runDir(repoRoot, runName);
+  let theRun: Run;
+  if (await pathExists(resolve(dir, "run.json"))) {
+    theRun = await loadRun(dir);
+  } else {
+    theRun = await createRun(repoRoot, runName, spec, config);
+  }
 
   const ctx: PromptContext = {
     runName,
@@ -55,133 +82,246 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
     runspecPath: resolve(theRun.dir, "runspec.md"),
   };
 
-  // ── Plan ────────────────────────────────────────────────
-  const planBinding = bindingFor(config, "plan");
-  const planProvider = factory(planBinding.host);
-  const planPrompt = await buildPhasePrompt("plan", ctx);
-
-  const planResult = await planProvider.dispatch(planPrompt, {
-    cwd: repoRoot,
-    model: planBinding.model,
-    effort: planBinding.effort,
-  });
-
-  if (!planResult.ok) {
-    return { outcome: "failed", phase: "plan", reason: `Provider exited ${planResult.exitCode}: ${planResult.stderr}` };
-  }
-
-  await advance(theRun);
   let state = await readState(theRun);
 
-  if (state.phase !== "build") {
-    return { outcome: "failed", phase: "plan", reason: "Plan did not produce plan.md or briefs/" };
+  // ── Plan ────────────────────────────────────────────────
+  if (state.phase === "plan" && state.status !== "complete") {
+    // If rerun, re-dispatch even if artifact exists
+    if (state.rerun) {
+      await writeState(theRun, { ...state, rerun: undefined });
+    }
+
+    const planBinding = bindingFor(config, "plan");
+    const planProvider = factory(planBinding.host);
+    const planPrompt = await buildPhasePrompt("plan", ctx);
+
+    const planResult = await planProvider.dispatch(planPrompt, {
+      cwd: repoRoot,
+      model: planBinding.model,
+      effort: planBinding.effort,
+      write: false,
+    });
+
+    if (!planResult.ok) {
+      return { outcome: "failed", phase: "plan", reason: `Provider exited ${planResult.exitCode}: ${planResult.stderr}` };
+    }
+
+    await advance(theRun);
+    state = await readState(theRun);
+
+    if (state.phase !== "build") {
+      return { outcome: "failed", phase: "plan", reason: "Plan did not produce plan.md or briefs/" };
+    }
   }
 
   // ── Build ───────────────────────────────────────────────
-  const units = await parsePlanUnits(theRun);
-  if (units.length === 0) {
-    return { outcome: "failed", phase: "build", reason: "No briefs found in briefs/" };
-  }
+  state = await readState(theRun);
+  if (state.phase === "build" && state.status !== "complete") {
+    const units = await parsePlanUnits(theRun);
+    if (units.length === 0) {
+      return { outcome: "failed", phase: "build", reason: "No briefs found in briefs/" };
+    }
 
-  const waves = topoSortWaves(units);
-  const buildBinding = bindingFor(config, "build");
-  const buildProvider = factory(buildBinding.host);
+    const buildBinding = bindingFor(config, "build");
+    const buildProvider = factory(buildBinding.host);
+    await mkdir(resolve(theRun.dir, "reports"), { recursive: true });
 
-  const ledger: BuildLedger = { units: [], updated: "" };
-  await mkdir(resolve(theRun.dir, "reports"), { recursive: true });
+    // Record base commit and create runner-owned integration branch
+    const integrationBranch = `valtay/${runName}`;
+    let baseCommit = theRun.meta.baseCommit;
+    if (!baseCommit) {
+      const headResult = await git(repoRoot, ["rev-parse", "HEAD"]);
+      baseCommit = headResult.ok ? headResult.stdout : "unknown";
+      theRun.meta.baseCommit = baseCommit;
+      theRun.meta.integrationBranch = integrationBranch;
+      await Bun.write(
+        resolve(theRun.dir, "run.json"),
+        `${JSON.stringify(theRun.meta, null, 2)}\n`,
+      );
+    }
 
-  for (const wave of waves) {
-    const waveResults = await Promise.all(
-      wave.units.map(async (unit) => {
-        const branch = `valtay/${runName}-${unit.id}`;
-        const wtPath = worktreePath(runName, unit.id);
-        await createWorktree(repoRoot, wtPath, branch);
+    // Create integration branch worktree
+    const integrationWtPath = worktreePath(runName, "integration");
+    await createWorktree(repoRoot, integrationWtPath, integrationBranch, "HEAD");
 
-        const prompt = await buildSubagentPrompt(unit.id, ctx);
-        const result = await buildProvider.dispatch(prompt, {
-          cwd: wtPath,
-          model: buildBinding.model,
-          effort: buildBinding.effort,
-        });
+    // Update context with base commit info for verify prompt
+    ctx.baseCommit = baseCommit;
+    ctx.integrationBranch = integrationBranch;
 
-        // Read the report the subagent wrote
-        const reportContent = await readArtifact(theRun, `reports/${unit.id}.md`);
-        const layers: LayerReport[] = reportContent
-          ? parseReport(unit.id, reportContent)
-          : [{ unit: unit.id, layer: "L1", status: result.ok ? "done" : "blocked", reason: result.ok ? undefined : result.stderr }];
+    // Track all unit worktrees for cleanup
+    const unitWorktreePaths: string[] = [];
 
-        return { unit: unit.id, layers, branch };
-      }),
-    );
+    // Build loop: dispatch waves, check advance, retry if blocked layers remain
+    for (;;) {
+      const existingLedger = await readLedger(theRun);
+      const doneUnits = new Set(
+        existingLedger?.units
+          .filter((u) => u.layers.every((l) => l.status === "done"))
+          .map((u) => u.unit) ?? []
+      );
+      const pendingUnits = units.filter((u) => !doneUnits.has(u.id));
 
-    // Merge worktree branches in unit order
-    for (const result of waveResults) {
-      const hasDone = result.layers.some((l) => l.status === "done");
-      if (hasDone) {
-        const mergeResult = await git(repoRoot, ["merge", "--no-ff", "-m", `valtay: merge ${result.unit}`, result.branch]);
-        if (!mergeResult.ok) {
-          // Mark all layers as blocked on merge failure
-          for (const layer of result.layers) {
-            if (layer.status === "done") {
-              layer.status = "blocked";
-              layer.reason = `Merge failed: ${mergeResult.stderr}`;
+      if (pendingUnits.length === 0) break;
+
+      if (existingLedger) {
+        for (const entry of existingLedger.units) {
+          for (const layer of entry.layers) {
+            if (layer.status === "blocked") {
+              layer.status = "pending";
+              layer.reason = undefined;
             }
           }
         }
+        await writeLedger(theRun, existingLedger);
       }
+
+      const waves = topoSortWaves(pendingUnits);
+      const ledger: BuildLedger = existingLedger ?? { units: [], updated: "" };
+
+      for (const wave of waves) {
+        // Create worktrees serially from integration branch (avoid git lock contention)
+        const worktrees: Array<{ unit: typeof wave.units[number]; branch: string; wtPath: string }> = [];
+        for (const unit of wave.units) {
+          const branch = `valtay/${runName}-${unit.id}`;
+          const wtPath = worktreePath(runName, unit.id);
+          await createWorktree(repoRoot, wtPath, branch, integrationBranch);
+          worktrees.push({ unit, branch, wtPath });
+          unitWorktreePaths.push(wtPath);
+        }
+
+        // Dispatch in parallel
+        const waveResults = await Promise.all(
+          worktrees.map(async ({ unit, branch, wtPath }) => {
+            const prompt = await buildSubagentPrompt(unit.id, ctx);
+            const result = await buildProvider.dispatch(prompt, {
+              cwd: wtPath,
+              model: buildBinding.model,
+              effort: buildBinding.effort,
+              write: true,
+            });
+
+            const reportContent = await readArtifact(theRun, `reports/${unit.id}.md`);
+            const layers: LayerReport[] = reportContent
+              ? parseReport(unit.id, reportContent)
+              : [{ unit: unit.id, layer: "L1", status: result.ok ? "done" : "blocked", reason: result.ok ? undefined : result.stderr }];
+
+            return { unit: unit.id, layers, branch };
+          }),
+        );
+
+        // Merge unit branches into integration worktree (not user's checkout)
+        for (const result of waveResults) {
+          const hasDone = result.layers.some((l) => l.status === "done");
+          if (hasDone) {
+            const mergeResult = await git(integrationWtPath, [
+              "merge", "--no-ff", "-m", `valtay: merge ${result.unit}`, result.branch,
+            ]);
+            if (!mergeResult.ok) {
+              // Abort the failed merge so the worktree is clean for the next wave
+              await git(integrationWtPath, ["merge", "--abort"]);
+              for (const layer of result.layers) {
+                if (layer.status === "done") {
+                  layer.status = "blocked";
+                  layer.reason = `Merge failed: ${mergeResult.stderr}`;
+                }
+              }
+            }
+          }
+        }
+
+        // Update ledger
+        for (const result of waveResults) {
+          const existing = ledger.units.findIndex((u) => u.unit === result.unit);
+          if (existing >= 0) {
+            ledger.units[existing] = { unit: result.unit, layers: result.layers, branch: result.branch };
+          } else {
+            ledger.units.push({ unit: result.unit, layers: result.layers, branch: result.branch });
+          }
+        }
+        await writeLedger(theRun, ledger);
+      }
+
+      // Write build summary
+      const allLayers = ledger.units.flatMap((u) => u.layers);
+      const doneCount = allLayers.filter((l) => l.status === "done").length;
+      const contestedCount = allLayers.filter((l) => l.status === "contested").length;
+      const blockedCount = allLayers.filter((l) => l.status === "blocked").length;
+
+      await writeArtifact(theRun, "build.md", [
+        `# Build Summary`,
+        "",
+        `- ${ledger.units.length} unit(s), ${allLayers.length} layer(s)`,
+        `- ${doneCount} done, ${contestedCount} contested, ${blockedCount} blocked`,
+      ].join("\n") + "\n");
+
+      await advance(theRun);
+      state = await readState(theRun);
+
+      const contestedLayers = allLayers.filter((l) => l.status === "contested");
+      if (contestedLayers.length > 0) {
+        await cleanupWorktrees(repoRoot, unitWorktreePaths, runName, units);
+        return { outcome: "contested", layers: contestedLayers };
+      }
+
+      if (state.status === "failed") {
+        const blockedLayers = allLayers.filter((l) => l.status === "blocked");
+        await cleanupWorktrees(repoRoot, unitWorktreePaths, runName, units);
+        return { outcome: "blocked", layers: blockedLayers };
+      }
+
+      if (state.phase === "build" && state.status === "pending" && state.rerun) {
+        await writeState(theRun, { ...state, rerun: undefined });
+        continue;
+      }
+
+      break;
     }
 
-    // Update ledger with this wave's results
-    for (const result of waveResults) {
-      ledger.units.push({ unit: result.unit, layers: result.layers, branch: result.branch });
+    // Clean up unit worktrees and branches (keep integration branch)
+    await cleanupWorktrees(repoRoot, unitWorktreePaths, runName, units);
+
+    state = await readState(theRun);
+    if (state.phase !== "verify") {
+      return { outcome: "failed", phase: "build", reason: `Unexpected state after build: ${state.phase}/${state.status}` };
     }
-    await writeLedger(theRun, ledger);
-  }
-
-  // Write build summary
-  const allLayers = ledger.units.flatMap((u) => u.layers);
-  const doneCount = allLayers.filter((l) => l.status === "done").length;
-  const contestedLayers = allLayers.filter((l) => l.status === "contested");
-  const blockedLayers = allLayers.filter((l) => l.status === "blocked");
-
-  const summaryLines = [
-    `# Build Summary`,
-    "",
-    `- ${ledger.units.length} unit(s), ${allLayers.length} layer(s)`,
-    `- ${doneCount} done, ${contestedLayers.length} contested, ${blockedLayers.length} blocked`,
-  ];
-  await writeArtifact(theRun, "build.md", summaryLines.join("\n") + "\n");
-
-  await advance(theRun);
-  state = await readState(theRun);
-
-  if (contestedLayers.length > 0) {
-    return { outcome: "contested", layers: contestedLayers };
-  }
-  if (blockedLayers.length > 0 && state.status === "failed") {
-    return { outcome: "blocked", layers: blockedLayers };
-  }
-  if (state.phase !== "verify") {
-    return { outcome: "failed", phase: "build", reason: `Unexpected state after build: ${state.phase}/${state.status}` };
-  }
+  } // end build phase guard
 
   // ── Verify ──────────────────────────────────────────────
-  const verifyBinding = bindingFor(config, "verify");
-  const verifyProvider = factory(verifyBinding.host);
-  const verifyPrompt = await buildPhasePrompt("verify", ctx);
-
-  const verifyResult = await verifyProvider.dispatch(verifyPrompt, {
-    cwd: repoRoot,
-    model: verifyBinding.model,
-    effort: verifyBinding.effort,
-  });
-
-  if (!verifyResult.ok) {
-    return { outcome: "failed", phase: "verify", reason: `Provider exited ${verifyResult.exitCode}: ${verifyResult.stderr}` };
-  }
-
-  await advance(theRun);
   state = await readState(theRun);
+  if (state.phase === "verify" && state.status !== "complete") {
+    if (state.rerun) {
+      await writeState(theRun, { ...state, rerun: undefined });
+    }
+
+    // Ensure context has base commit info (may be resuming from a previous run)
+    if (!ctx.baseCommit && theRun.meta.baseCommit) {
+      ctx.baseCommit = theRun.meta.baseCommit;
+      ctx.integrationBranch = theRun.meta.integrationBranch;
+    }
+
+    // Verify runs against the integration worktree where the built code lives
+    const verifyCwd = theRun.meta.integrationBranch
+      ? worktreePath(runName, "integration")
+      : repoRoot;
+
+    const verifyBinding = bindingFor(config, "verify");
+    const verifyProvider = factory(verifyBinding.host);
+    const verifyPrompt = await buildPhasePrompt("verify", ctx);
+
+    const verifyResult = await verifyProvider.dispatch(verifyPrompt, {
+      cwd: verifyCwd,
+      model: verifyBinding.model,
+      effort: verifyBinding.effort,
+      write: false,
+    });
+
+    if (!verifyResult.ok) {
+      return { outcome: "failed", phase: "verify", reason: `Provider exited ${verifyResult.exitCode}: ${verifyResult.stderr}` };
+    }
+
+    await advance(theRun);
+    state = await readState(theRun);
+  }
 
   if (state.status === "complete") {
     return { outcome: "complete" };

@@ -6,7 +6,6 @@ import composeSkillMd from "../assets/skills/valtay-compose/SKILL.md" with { typ
 import composeFormatMd from "../assets/skills/valtay-compose/reference/format.md" with { type: "file" };
 import composeExampleMd from "../assets/skills/valtay-compose/reference/example.md" with { type: "file" };
 import planSkillMd from "../assets/phases/plan/SKILL.md" with { type: "file" };
-import buildSkillMd from "../assets/phases/build/SKILL.md" with { type: "file" };
 import buildSubagentMd from "../assets/phases/build/SUBAGENT.md" with { type: "file" };
 import verifySkillMd from "../assets/phases/verify/SKILL.md" with { type: "file" };
 
@@ -21,11 +20,11 @@ export interface ShippedSkill {
 }
 
 export const HOST_SKILL_ROOTS: Readonly<Record<string, string>> = {
-  "claude-code": ".claude/skills",
+  "claude": ".claude/skills",
   codex: ".codex/skills",
 };
 
-export const DEFAULT_ADAPTER = "claude-code";
+export const DEFAULT_ADAPTER = "claude";
 
 export function skillRootFor(adapter: string): string {
   const root = HOST_SKILL_ROOTS[adapter];
@@ -53,9 +52,8 @@ export function phaseSkillName(id: PhaseId): string {
   return `valtay-${id}`;
 }
 
-const SHIPPED_PHASES: Record<PhaseId, string> = {
+const SHIPPED_PHASES: Partial<Record<PhaseId, string>> = {
   plan: planSkillMd,
-  build: buildSkillMd,
   verify: verifySkillMd,
 };
 

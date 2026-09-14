@@ -71,6 +71,10 @@ export interface RunMeta {
   created: string;
   runspec: { path: string; sha: string };
   config: ResolvedConfig;
+  /** Pre-build HEAD commit. Recorded so verify can diff against it. */
+  baseCommit?: string;
+  /** Runner-owned integration branch. Human merges this when done. */
+  integrationBranch?: string;
 }
 
 export interface Run {
@@ -126,7 +130,8 @@ export async function createRun(
   const run: Run = { dir, meta };
 
   await Bun.write(resolve(dir, "run.json"), `${JSON.stringify(meta, null, 2)}\n`);
-  await writeArtifact(run, "runspec.md", spec.raw);
+  await writeArtifact(run, "runspec.frozen.md", spec.raw); // immutable reference copy
+  await writeArtifact(run, "runspec.md", spec.raw); // working copy
   await writeState(run, {
     phase: "plan",
     status: "pending",

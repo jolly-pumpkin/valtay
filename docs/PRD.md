@@ -9,8 +9,8 @@ If a proposed feature would not survive a compliance review, it does not belong 
 
 | | |
 |---|---|
-| **Status** | Argued, and now partly built. The spine runs end to end; see `IMPLEMENTED.md`. |
-| **Version** | 0.2 |
+| **Status** | Argued, and now partly built. The MVP (v0.3) runs plan → build → verify. |
+| **Version** | 0.3 |
 | **Date** | 2026-09-01 |
 | **Owner** | Collin |
 | **One line** | A host-agnostic harness that runs coding agents as a gated pipeline of short, fresh-context phases, and makes the reviewable artifact an executable call trace instead of a wall of prose. |
@@ -33,6 +33,23 @@ interface (§11) is now grounded in a working provider abstraction rather than
 invented. The review surface (§8) moved from a renderer we build to the editor's
 quickfix list, which we do not. §5 splits the orchestrator from the review surface
 as a consequence.
+
+**0.3 — the MVP pivot (2026-09-14).** The eight-phase pipeline described below was
+designed to test three claims (C1–C3). `src/` implements a three-phase subset —
+plan → build → verify — that tests C1 (fresh context per phase) and whether an LLM
+drift check at verify is sufficient without the probe. What was cut:
+
+- The probe (§4.1, "the load-bearing idea"), the trace, and `valtay trace`.
+- Research, Reconcile, Shape, Assess, Invariants phases.
+- Five of six gates. Only `verify` remains; plan and build auto-advance.
+- The deviation ledger and promotion rule (C3). `ledger.json` is now build status.
+- Mode B (60-second gate forms).
+
+What the MVP proves: that the three-phase loop with provider-agnostic dispatch
+delivers value, and whether the drift-check verifier catches enough to justify
+running it. What would bring the probe back: evidence that the LLM verifier misses
+structural drift that a call trace would have caught — i.e., runs where verify says
+"clean" but the human finds real problems.
 
 ---
 

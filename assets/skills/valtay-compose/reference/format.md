@@ -18,9 +18,7 @@ phases:
   build:  { model: <model>, effort: <effort> }
   verify: { model: <model>, effort: <effort> }
 
-run_budget:
-  max_units: <int>
-  max_layers: <int>
+retries: <int>                  # max retry attempts for blocked layers (default: 1)
 ---
 ```
 
