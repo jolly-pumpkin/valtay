@@ -54,6 +54,6 @@ export function formatStartResult(run: Run): string[] {
     `  spec    ${run.meta.runspec.path} (${run.meta.runspec.sha.slice(0, 12)})`,
     `  dir     ${run.dir}`,
     "",
-    "Next: run the plan skill in your coding session, then `valtay advance`.",
+    "Next: `valtay run` to execute the pipeline, or invoke phases manually.",
   ];
 }

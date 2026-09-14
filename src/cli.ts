@@ -9,8 +9,7 @@ import { runApprove, runReject, runOverride, runAcceptLayer } from "./commands/g
 import { runShow } from "./commands/show.ts";
 import { runCheck } from "./commands/check.ts";
 import { runUpgrade, formatUpgradeResult } from "./commands/upgrade.ts";
-import { daemonStart, daemonStatus, daemonStop, daemonAttach } from "./commands/daemon.ts";
-import { advance } from "./run/orchestrator.ts";
+import { runCommand } from "./commands/run.ts";
 
 const program = new Command()
   .name("valtay")
@@ -63,16 +62,12 @@ program
   );
 
 program
-  .command("advance")
-  .description("Check for new artifacts and advance the run")
-  .option("--run <name>", "run name (optional when the repo has one run)")
-  .option("--repo <path>", "repo root", ".")
-  .action((opts) =>
-    report(async () => {
-      const run = await selectRun(opts);
-      return advance(run);
-    })
-  );
+  .command("run")
+  .description("Run the full pipeline: plan → build → verify")
+  .argument("<spec>", "path to runspec.md")
+  .option("--run <name>", "run name (defaults to the spec's run: key)")
+  .option("--repo <path>", "repo root")
+  .action((spec, opts) => report(() => runCommand({ spec, ...opts })));
 
 program
   .command("approve")
@@ -130,46 +125,5 @@ program
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
   .action((opts) => report(() => runStatusLines(opts)));
-
-const daemon = program
-  .command("daemon")
-  .description("Unattended pipeline execution via tmux");
-
-daemon
-  .command("start")
-  .description("Launch a tmux session running Claude Code for the pipeline")
-  .option("--run <name>", "run name (optional when the repo has one run)")
-  .option("--repo <path>", "repo root", ".")
-  .action((opts) => report(() => daemonStart(opts)));
-
-daemon
-  .command("status")
-  .description("Print daemon state; detects dead tmux sessions")
-  .option("--run <name>", "run name (optional when the repo has one run)")
-  .option("--repo <path>", "repo root", ".")
-  .action((opts) => report(() => daemonStatus(opts)));
-
-daemon
-  .command("stop")
-  .description("Kill the tmux session and mark the daemon as halted")
-  .option("--run <name>", "run name (optional when the repo has one run)")
-  .option("--repo <path>", "repo root", ".")
-  .action((opts) => report(() => daemonStop(opts)));
-
-daemon
-  .command("attach")
-  .description("Attach to the daemon's tmux session")
-  .option("--run <name>", "run name (optional when the repo has one run)")
-  .option("--repo <path>", "repo root", ".")
-  .action(async (opts) => {
-    try {
-      const { session } = await daemonAttach(opts);
-      const { spawnSync } = await import("child_process");
-      spawnSync("tmux", ["attach", "-t", session], { stdio: "inherit" });
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      process.exit(1);
-    }
-  });
 
 await program.parseAsync();

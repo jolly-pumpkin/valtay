@@ -59,7 +59,7 @@ describe("start", () => {
 
     const lines = formatStartResult(run).join("\n");
     expect(lines).toContain('Started run "demo"');
-    expect(lines).toContain("plan skill");
+    expect(lines).toContain("valtay run");
   });
 
   test("--run overrides the spec's own name", async () => {
