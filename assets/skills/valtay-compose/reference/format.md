@@ -57,7 +57,7 @@ Free-form hints for the pipeline. Delete the section if empty.
 
 | Section | Consumed by | Notes |
 |---|---|---|
-| Frontmatter | Orchestrator | Read at `valtay start`, frozen in manifest |
+| Frontmatter | Runner | Read at `valtay run`, frozen in run dir |
 | Design | Plan, Build, Verify | The source of truth |
 | Out of scope | Plan, Build | Exclusion fence |
 | Notes | Any phase | Hints, not constraints |
@@ -66,5 +66,5 @@ Free-form hints for the pipeline. Delete the section if empty.
 
 1. **`valtay new`** — scaffold with TODOs
 2. **The user** — fill it out (this skill helps)
-3. **`valtay start`** — the spec's SHA is frozen into the manifest
+3. **`valtay run`** — creates the run, freezes the spec's SHA, executes the pipeline
 4. **Post-run** — an immutable record of what was requested

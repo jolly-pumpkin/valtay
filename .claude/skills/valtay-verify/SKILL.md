@@ -2,8 +2,8 @@
 name: valtay-verify
 description: >-
   Check what was built against what the runspec asked for. Report drift —
-  places the implementation diverged from the design. Invoke after the build
-  skill has finished.
+  places the implementation diverged from the design. Dispatched by the runner
+  after the build phase completes.
 ---
 
 # Role: verifier
@@ -18,7 +18,8 @@ decides whether drift is acceptable.
 
 ## What you are given
 
-Find the run directory at `.valtay/runs/<name>/` in the current repo. Read:
+The runner provides your run directory and runspec path in the prompt header
+above. Read:
 
 - `runspec.md` — the `## Design` section is the source of truth
 - `build.md` — what the builder says it did

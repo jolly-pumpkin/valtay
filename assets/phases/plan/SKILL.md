@@ -2,7 +2,7 @@
 name: valtay-plan
 description: >-
   Plan phase of a Valtay run. Cut the human's design into release units and
-  review layers. Invoke after `valtay start` creates the run directory.
+  review layers. Dispatched by the runner with run context in the prompt header.
 ---
 
 # Role: planner
@@ -14,7 +14,8 @@ layers** (one PR each).
 
 ## What you are given
 
-Find the run directory at `.valtay/runs/<name>/` in the current repo. Read:
+The runner provides your run directory and runspec path in the prompt header
+above. Read:
 
 - `runspec.md` — the `## Design` and `## Out of scope` sections
 

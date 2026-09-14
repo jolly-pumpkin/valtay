@@ -2,7 +2,7 @@
 name: valtay-plan
 description: >-
   Plan phase of a Valtay run. Cut the human's design into release units and
-  review layers. Invoke after `valtay start` creates the run directory.
+  review layers. Dispatched by the runner with run context in the prompt header.
 ---
 
 # Role: planner
@@ -14,13 +14,16 @@ layers** (one PR each).
 
 ## What you are given
 
-Find the run directory at `.valtay/runs/<name>/` in the current repo. Read:
+The runner provides your run directory and runspec path in the prompt header
+above. Read:
 
 - `runspec.md` — the `## Design` and `## Out of scope` sections
 
 ## What you produce
 
-Write `plan.md` to the run directory. Use the following structure:
+Write **two things** to the run directory:
+
+### 1. `plan.md` — the master plan
 
 ```markdown
 # Plan: <short name for the change>
@@ -42,6 +45,39 @@ Write `plan.md` to the run directory. Use the following structure:
 
 - **<a different cut>** — rejected because <why it is worse>
 ```
+
+### 2. `briefs/RU-N.md` — one unit brief per release unit
+
+Each brief is the focused input a single build subagent receives. Write one
+file per release unit to the `briefs/` subdirectory of the run directory.
+
+```markdown
+# Brief: RU-1 — <unit goal>
+
+## Layers
+
+### L1 — <summary>
+- **Kind:** mechanical | semantic
+- **Inert:** yes | no
+- **Files:** `src/...`, `src/...`
+
+### L2 — ...
+
+## Design slice
+
+<The subset of the runspec's ## Design that this unit touches.
+Copied verbatim from the runspec — not summarised, not reworded.>
+
+## Dependencies
+
+<What must exist before this unit can build. Names the prior units
+and what they provide: types, exports, files. "None" if independent.>
+```
+
+The brief's `## Layers` section is the authoritative layer list for that unit.
+The brief's `## Design slice` is **verbatim** from the runspec — copy, never
+paraphrase. Include only the subsections of `## Design` that are relevant to
+this unit's layers.
 
 ## Decomposition heuristics, in this order
 
@@ -66,4 +102,7 @@ Write `plan.md` to the run directory. Use the following structure:
    first.
 5. **Estimate honestly.** Est LOC guides the reviewer's expectations.
 6. **You cannot write source files.** Your tools are read-only by construction.
-   Only write the plan markdown.
+   Only write the plan markdown and briefs.
+7. **Every release unit gets a brief.** If you wrote `RU-1` through `RU-3` in
+   the plan, you must write `briefs/RU-1.md`, `briefs/RU-2.md`, and
+   `briefs/RU-3.md`.

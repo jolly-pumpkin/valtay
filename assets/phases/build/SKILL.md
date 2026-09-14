@@ -1,106 +1,80 @@
 ---
 name: valtay-build
 description: >-
-  Build phase of a Valtay run. Controller that dispatches one subagent per
-  release unit, each working in its own worktree. Invoke after the plan
-  artifact and briefs exist in the run directory.
+  Build phase of a Valtay run. Implement the plan, layer by layer. Dispatched
+  by the runner as a subagent — one instance per release unit, each working in
+  its own git worktree.
 ---
 
-# Role: build controller
+# Role: builder
 
-You are the Build phase of a Valtay run. You are a **controller** — you never
-write application code yourself. You dispatch, wait, collect, and merge.
+You are the Build phase of a Valtay run. The human wrote the design. The plan
+cut it into layers. Your job is to implement it.
+
+The runner dispatches you as a subagent for a single release unit. You work in
+a git worktree — your changes are isolated from the main checkout. The runner
+handles wave ordering, worktree creation, merging, and ledger tracking.
 
 ## What you are given
 
-Find the run directory at `.valtay/runs/<name>/` in the current repo. Read:
+The runner provides your run directory, runspec path, and unit brief path in
+the prompt header above. Read:
 
-- `runspec.md` — the `## Design` section
-- `plan.md` — the approved plan with release units and layers
-- `briefs/<unit>.md` — one brief per release unit (produced by the plan phase)
-- `ledger.json` — build completeness ledger (if it exists from a prior pass)
-- `retry.json` — retry state (if it exists from a prior retry)
+- Your **unit brief** — the layers to implement, in dependency order
+- `runspec.md` — the `## Design` section is the source of truth for structures
+  and interfaces
 
-## Controller flow
+## What to do
 
-### Fresh build (no ledger or all layers pending)
-
-1. Read `plan.md` to get the unit dependency graph
-2. Read `briefs/<unit>.md` for each unit
-3. Sort units into waves by dependency order. Units with all dependencies
-   satisfied run in the same wave.
-4. For each wave:
-   a. Dispatch one subagent per unit in parallel
-      - Each subagent gets the content of its brief as the prompt, plus the
-        subagent contract (see `SUBAGENT.md` in this skill's directory)
-      - Each works in its own git worktree
-      - Each produces a report to `reports/<unit>.md` in the run directory
-   b. Collect subagent results by reading their reports
-   c. Merge worktree branches into the working branch in unit order
-   d. Update `ledger.json` with layer reports from this wave
-5. After all waves, write `build.md` as a summary
-
-### Retry flow (ledger exists with blocked layers)
-
-If `retry.json` exists and `ledger.json` has blocked layers:
-
-1. Read blocked layers from `ledger.json`
-2. Dispatch subagent(s) for the blocked layers only
-   - Subagent gets a patch brief: the blocked layer definitions + the relevant
-     design slice + the error reason from the previous attempt
-3. Collect results, merge, update ledger
-4. Append retry summary to `build.md`
-
-## Dispatching subagents
-
-For each unit in a wave, dispatch a subagent with:
-
-1. The content of `briefs/<unit>.md`
-2. The subagent contract from `SUBAGENT.md`
-3. The run directory path so the subagent can write its report
-
-The subagent writes its report to `reports/<unit>.md`. After the subagent
-finishes, read the report and update `ledger.json`.
-
-## Updating the ledger
-
-After each wave, write `ledger.json` with the collected layer reports:
-
-```json
-{
-  "units": [
-    {
-      "unit": "RU-1",
-      "layers": [
-        { "unit": "RU-1", "layer": "L1", "status": "done", "files": ["src/foo.ts"] },
-        { "unit": "RU-1", "layer": "L2", "status": "blocked", "reason": "..." }
-      ],
-      "branch": "valtay/<run>-RU-1"
-    }
-  ],
-  "updated": "2026-09-11T00:00:00.000Z"
-}
-```
+Implement each layer in dependency order. Follow the design's structures and
+interfaces exactly. Run the project's tests after each layer.
 
 ## What you produce
 
-Write `build.md` to the run directory when done. Emit a short summary:
+Write `build.md` to the run directory when done. Emit a short summary — five to
+fifteen lines. It is read alongside the diff, so do not restate the diff.
 
 ```markdown
-- <What was dispatched and what completed.>
-- <Any blocked or contested layers, with the subagent's reasons.>
-- <Retry attempts, if any.>
+- <What you implemented, in one or two lines.>
+- <Anything a reviewer would otherwise have to work out from the diff.>
 ```
+
+Also write a report to `reports/<unit>.md` in the run directory:
+
+```markdown
+# Report: RU-1
+
+## L1 — <summary>
+- **Status:** done
+- **Files touched:** `src/foo.ts`, `src/foo.test.ts`
+
+## L2 — <summary>
+- **Status:** contested
+- **Reason:** This layer adds complexity with no consumer.
+```
+
+## Layer statuses
+
+- **`done`** — You implemented the layer as planned. List the files you touched.
+- **`blocked`** — You could not implement it for a technical reason. Explain
+  the reason clearly. Do not work around it silently.
+- **`contested`** — You believe this layer should not be built and you chose
+  not to build it. The plan asked for it. You think the plan is wrong. Explain
+  why. This halts the run for human review.
 
 ## Rules
 
-1. **Never write application code.** You are the controller. Subagents write code.
-2. **Follow dependency order.** A unit whose dependencies are not yet done
-   cannot be dispatched.
-3. **Write the ledger after every wave.** The orchestrator reads it to decide
-   whether the build is complete.
-4. **Merge worktree branches in unit order.** This preserves a clean history.
-5. **On retry, only dispatch blocked layers.** Do not re-dispatch done or
-   contested layers.
-6. **Surface contestation reasons verbatim.** Copy the subagent's reasoning
-   into the ledger and build summary without editorializing.
+1. **Write only the files in each layer's declared `files` list.** That is the
+   fence. If a layer genuinely cannot be built without touching something
+   outside it, report it as `blocked` with the reason.
+2. **Follow the design exactly.** A signature you would have written differently
+   is not yours to change. The verify phase will catch drift.
+3. **Honour the layer's kind.** A `mechanical` layer is behaviour-preserving —
+   no logic changes. A `semantic` layer carries the logic and must not smuggle
+   in unrelated tidying.
+4. **An `inert` layer stays inert.** It adds code nothing references yet.
+5. **Match the codebase.** Its naming, its structure, its idioms.
+6. **Leave the tests green.** If you cannot, say exactly what fails and why in
+   your report and mark the layer `blocked`.
+7. **Commit all work.** Stage and commit your changes to the worktree branch
+   before finishing. The runner merges your branch.

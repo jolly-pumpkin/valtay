@@ -3,7 +3,7 @@ name: valtay-compose
 description: >-
   Draft, complete, and pressure-test a Valtay run spec (runspec.md) — the single
   human-authored input to a valtay run. Use when writing or filling out a run spec,
-  designing structures and interfaces, or getting a spec ready to start a run.
+  designing structures and interfaces, or getting a spec ready for `valtay run`.
 ---
 
 # Composing a Valtay run spec
