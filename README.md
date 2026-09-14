@@ -4,9 +4,10 @@ A harness that runs coding agents as a gated pipeline. You write the design,
 the AI plans, builds, and verifies. If the build drifts from your design, the
 run stops and shows you exactly where.
 
-The orchestrator never spawns agents — it's a state machine watching for
-artifacts on disk. You invoke each phase as a skill in your interactive coding
-session (Claude Code, Codex, etc). The CLI just tracks state and enforces gates.
+The runner dispatches to provider CLIs — Claude Code (`claude -p`) or
+Codex (`codex -q`) — based on your runspec config. All orchestration
+(wave sorting, worktree management, merging) is deterministic TypeScript.
+The AI only does creative work: planning, coding, verifying.
 
 Named for the Valtay of *Dungeon Crawler Carl* — the relentlessly bureaucratic
 species who administer things nobody asked them to administer.
@@ -26,32 +27,34 @@ runspec (you) → plan (AI) → build (AI) → verify (AI)
 bun install
 bun link                          # puts `valtay` on PATH
 
-valtay init                       # writes valtay.toml + installs skills (commit them)
+valtay init                       # writes config + installs skills
 valtay new my-change              # scaffold a run spec
 # edit .valtay/runs/my-change/runspec.md — write your design
-valtay start .valtay/runs/my-change/runspec.md
+valtay run .valtay/runs/my-change/runspec.md
 ```
 
-## The run loop
+That's it. The runner creates the run, plans, builds in parallel worktrees,
+verifies, and returns the result.
 
-```bash
-# 1. Run the plan skill in your Claude Code session
-#    → it reads your design, writes plan.md to the run dir
-valtay advance                    # CLI sees plan.md, advances to build
+## Provider configuration
 
-# 2. Run the build skill
-#    → it reads plan.md + your design, implements the code
-valtay advance                    # CLI sees build.md, advances to verify
+The runspec frontmatter declares which provider handles each phase:
 
-# 3. Run the verify skill
-#    → it compares what was built against your design
-valtay advance                    # clean? done. drift? parks for your review.
+```yaml
+---
+run: player-damage
+host: claude                      # default provider for all phases
+model: opus
 
-# If drift:
-valtay show verify.json           # see the findings
-valtay approve verify             # accept drift and complete
-valtay reject verify "fix X" --to build   # go back to build
+phases:
+  plan:   { host: claude, model: sonnet }
+  build:  { host: codex, model: gpt-5.4-mini }
+  verify: { host: claude, model: opus }
+---
 ```
+
+Mix and match — or use one provider for everything. The runner dispatches
+to whatever CLI the runspec says.
 
 ## The run spec
 
@@ -71,6 +74,8 @@ phases:
   plan:   { model: sonnet, effort: medium }
   build:  { model: opus,   effort: high }
   verify: { model: opus,   effort: high }
+
+retries: 2
 ---
 
 # Player takes damage when an enemy leaks
@@ -98,121 +103,106 @@ function applyLeakDamage(player: Player, enemy: Enemy): void;
 The game has a JSON mode at ~40k fps — use it for verification.
 ```
 
+## What the runner does
+
+```
+valtay run runspec.md
+    │
+    ├── creates the run (freezes runspec, writes state.json)
+    │
+    ├── PLAN: dispatches to configured provider
+    │         provider writes plan.md + briefs/RU-N.md
+    │
+    ├── BUILD: parses briefs, topo-sorts dependency waves
+    │          for each wave:
+    │            creates git worktrees per unit
+    │            dispatches subagents in parallel
+    │            merges worktree branches in order
+    │            writes ledger.json
+    │
+    ├── VERIFY: dispatches to configured provider
+    │           provider writes verify.json
+    │
+    └── returns: complete | drift | contested | blocked | failed
+```
+
+Build subagents work in isolated git worktrees. Wave ordering and merging
+are handled by the runner in TypeScript — no tokens spent on mechanical work.
+
+## After the run
+
+If verify finds drift, the runner prints the findings and you decide:
+
+```bash
+valtay show verify.json           # see the findings
+valtay approve verify             # accept drift and complete
+valtay reject verify "fix X" --to build   # go back to build, re-run
+```
+
+If a build subagent contests a layer (says the plan is wrong), the run
+halts and you resolve it:
+
+```bash
+valtay accept RU-1 L2             # mark layer done by exemption
+valtay override RU-1 L2           # force re-build, no contesting
+```
+
 ## Flows
 
-### Happy path — no drift
+### Happy path — `valtay run`
 
 ```
- YOU                         CLI                        CLAUDE CODE
+ YOU                         RUNNER                     PROVIDER
   │                           │                              │
-  ├── write runspec.md ──────►│                              │
-  ├── valtay start ──────────►│── creates run dir ──────────►│
-  │                           │   state: plan/pending        │
-  │                           │                              │
-  ├── "run the plan skill" ──────────────────────────────────►│
-  │                           │                 writes plan.md│
-  ├── valtay advance ────────►│── sees plan.md ─────────────►│
-  │                           │   state: build/pending       │
-  │                           │                              │
-  ├── "run the build skill" ─────────────────────────────────►│
-  │                           │                writes build.md│
-  ├── valtay advance ────────►│── sees build.md ────────────►│
-  │                           │   state: verify/pending      │
-  │                           │                              │
-  ├── "run the verify skill" ────────────────────────────────►│
-  │                           │            writes verify.json │
-  ├── valtay advance ────────►│── reads verify.json          │
+  ├── valtay run runspec.md ─►│                              │
+  │                           ├── create run ────────────────│
+  │                           ├── dispatch plan ────────────►│
+  │                           │              writes plan.md  │
+  │                           ├── parse briefs, sort waves ──│
+  │                           ├── dispatch build (parallel) ►│
+  │                           │   ┌─ RU-1 in worktree ──────►│
+  │                           │   └─ RU-2 in worktree ──────►│
+  │                           │           writes reports/    │
+  │                           ├── merge worktrees ───────────│
+  │                           ├── dispatch verify ──────────►│
+  │                           │           writes verify.json │
   │                           │   status: clean              │
-  │                           │   state: complete ✓          │
+  │  ◄── "complete" ──────────┤                              │
 ```
 
-### Drift detected — you accept it
+### Drift detected
 
 ```
-  ├── valtay advance ────────►│── reads verify.json
-  │                           │   status: drift
-  │                           │   state: awaiting_gate
-  │                           │
-  ├── valtay show verify.json │
-  │   ◄── "Player.health      │
-  │       missing in build"   │
-  │                           │
-  │   (you decide it's fine)  │
-  ├── valtay approve verify ─►│── state: complete ✓
-```
-
-### Drift detected — you fix it
-
-```
-  ├── valtay advance ────────►│── reads verify.json
-  │                           │   status: drift
-  │                           │   state: awaiting_gate
-  │                           │
-  ├── valtay show verify.json │
-  │   ◄── "Player.health      │
-  │       missing in build"   │
-  │                           │
-  │   (you want it fixed)     │
-  ├── valtay reject verify ──►│── state: build/pending
-  │     "add health" --to build│   rerun: true
-  │                           │                              │
-  ├── "run the build skill" ─────────────────────────────────►│
-  │                           │                writes build.md│
-  ├── valtay advance ────────►│── state: verify/pending      │
-  │                           │                              │
-  ├── "run the verify skill" ────────────────────────────────►│
-  │                           │            writes verify.json │
-  ├── valtay advance ────────►│── status: clean              │
-  │                           │   state: complete ✓          │
-```
-
-### Drift detected — plan was wrong
-
-```
-  ├── valtay advance ────────►│── reads verify.json
-  │                           │   status: drift
-  │                           │   state: awaiting_gate
-  │                           │
-  │   (the plan cut it wrong) │
-  ├── valtay reject verify ──►│── state: plan/pending
-  │     "wrong cut" --to plan  │   rerun: true
-  │                           │                              │
-  ├── "run the plan skill" ──────────────────────────────────►│
-  │                           │                 writes plan.md│
-  ├── valtay advance ────────►│── advances through           │
-  │                           │   build → verify             │
-  │                           │   ...                        │
-```
-
-### You edit the design mid-run
-
-```
-  │   (you realize the design  │
-  │    was wrong after seeing  │
-  │    the plan)               │
-  │                           │
-  ├── edit runspec.md ────────►│
-  ├── valtay status ─────────►│── "warn: frozen runspec.md
-  │                           │    no longer matches hash"
-  │                           │
-  │   (start a new run with   │
-  │    the corrected design)  │
+  │  ◄── "drift: 2 findings" ─┤
+  │                            │
+  ├── valtay show verify.json  │
+  │   ◄── "Player.health       │
+  │       missing in build"    │
+  │                            │
+  │   (accept or fix)          │
+  ├── valtay approve verify ──►│   → complete
+  │   OR                       │
+  ├── valtay reject verify ───►│   → re-enter at plan or build
+  │     --to build             │
+  ├── valtay run runspec.md ──►│   → re-run
 ```
 
 ## CLI commands
 
 | Command | What it does |
 |---|---|
+| `valtay run <spec>` | Run the full pipeline: plan → build → verify |
 | `valtay init` | Write config + install skills into the repo |
-| `valtay upgrade` | Update skills to current version, detect obsolete ones |
+| `valtay upgrade` | Update skills to current version |
 | `valtay new <name>` | Scaffold a run spec |
 | `valtay check <spec>` | Advisory lint over a run spec |
-| `valtay start <spec>` | Validate and open a run |
-| `valtay advance` | Check for new artifacts and advance |
+| `valtay start <spec>` | Create a run without executing (for manual phase control) |
 | `valtay status` | Where the run stands, phase by phase |
 | `valtay show <artifact>` | Print an artifact |
 | `valtay approve verify` | Accept drift findings |
 | `valtay reject verify <reason> --to <phase>` | Reject and re-enter |
+| `valtay override <unit> <layer>` | Force-build a contested layer |
+| `valtay accept <unit> <layer>` | Accept a contestation by exemption |
 
 ## Skills
 
@@ -220,5 +210,7 @@ Valtay installs four skills into your coding harness:
 
 - **valtay-compose** — helps you write run specs
 - **valtay-plan** — cuts your design into release units and layers
-- **valtay-build** — implements the plan
+- **valtay-build** — implements the plan (used by the runner for subagent prompts)
 - **valtay-verify** — checks the build against your design for drift
+
+Skills are also used as prompt templates by the runner when dispatching to providers.
