@@ -203,7 +203,8 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
 
     // Create integration branch worktree
     const integrationWtPath = worktreePath(runName, "integration");
-    await createWorktree(repoRoot, integrationWtPath, integrationBranch, "HEAD");
+    // Reuse on re-entry: the branch already carries earlier waves' merges.
+    await createWorktree(repoRoot, integrationWtPath, integrationBranch, "HEAD", { reuse: true });
 
     // Update context with base commit info for verify prompt
     ctx.baseCommit = baseCommit;

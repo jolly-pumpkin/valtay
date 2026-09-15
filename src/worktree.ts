@@ -41,13 +41,28 @@ export async function createWorktree(
   repoRoot: string,
   path: string,
   branch: string,
-  ref = "HEAD"
+  ref = "HEAD",
+  opts: { reuse?: boolean } = {}
 ): Promise<void> {
   if (await pathExists(path)) await removeWorktree(repoRoot, path);
 
-  // -B so a re-entered phase reuses the branch name rather than failing on it.
+  // `reuse`: if the branch already exists, check it out as it is. This is what a
+  // re-entered run needs for its integration branch — resetting it to `ref` would
+  // silently discard every wave merged before the interruption. A unit branch is
+  // the opposite case: a rebuilt unit starts fresh from the integration branch, so
+  // -B (create or reset) is right there.
+  if (opts.reuse && await branchExists(repoRoot, branch)) {
+    const reuse = await git(repoRoot, ["worktree", "add", "--quiet", path, branch]);
+    if (!reuse.ok) throw new Error(`Could not reopen worktree at ${path}: ${reuse.stderr}`);
+    return;
+  }
+
   const result = await git(repoRoot, ["worktree", "add", "--quiet", "-B", branch, path, ref]);
   if (!result.ok) throw new Error(`Could not create worktree at ${path}: ${result.stderr}`);
+}
+
+export async function branchExists(repoRoot: string, branch: string): Promise<boolean> {
+  return (await git(repoRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).ok;
 }
 
 /**
