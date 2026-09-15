@@ -167,6 +167,29 @@ export function parseClaudeUsage(stdout: string): DispatchUsage | undefined {
 }
 
 /**
+ * Manifest notes for one dispatch: the claude session id when the CLI reports
+ * one (so `claude --resume <id>` can reopen the phase's transcript), and on a
+ * non-zero exit the CLI's own error subtype/result or the tail of stderr —
+ * without this a failed phase is just an exit code in the manifest.
+ */
+export function dispatchNotes(result: DispatchResult): string[] {
+  const notes: string[] = [];
+  let obj: Record<string, unknown> | undefined;
+  try { obj = JSON.parse(result.stdout); } catch { /* not claude json */ }
+
+  if (obj && typeof obj["session_id"] === "string") notes.push(`session:${obj["session_id"]}`);
+
+  if (!result.ok) {
+    const parts: string[] = [];
+    if (obj && typeof obj["subtype"] === "string") parts.push(obj["subtype"]);
+    if (obj && obj["is_error"] === true && typeof obj["result"] === "string") parts.push(obj["result"].slice(0, 300));
+    if (parts.length === 0 && result.stderr) parts.push(result.stderr.slice(-300));
+    notes.push(`exit ${result.exitCode}: ${parts.join(" — ") || "no output"}`);
+  }
+  return notes;
+}
+
+/**
  * Parse codex `--json` JSONL stdout into DispatchUsage.
  * Looks for `turn.completed` events carrying usage data.
  * Returns undefined if no usage data is found.

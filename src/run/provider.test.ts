@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { providerFor, buildClaudeArgs, buildCodexArgs, readOnlyRules, parseClaudeUsage, parseCodexUsage } from "./provider.ts";
+import { providerFor, buildClaudeArgs, buildCodexArgs, readOnlyRules, dispatchNotes, parseClaudeUsage, parseCodexUsage } from "./provider.ts";
 import type { DispatchOpts } from "./provider.ts";
 
 const readOpts: DispatchOpts = { cwd: "/tmp", model: "sonnet", write: false };
@@ -186,5 +186,23 @@ describe("parseCodexUsage", () => {
 
   test("returns undefined for non-JSONL", () => {
     expect(parseCodexUsage("garbage")).toBeUndefined();
+  });
+});
+
+describe("dispatchNotes", () => {
+  test("records the session id on success and nothing else", () => {
+    const notes = dispatchNotes({ ok: true, exitCode: 0, stderr: "", stdout: JSON.stringify({ session_id: "abc", result: "done" }) });
+    expect(notes).toEqual(["session:abc"]);
+  });
+
+  test("on failure records the CLI's error subtype and result text", () => {
+    const stdout = JSON.stringify({ session_id: "abc", is_error: true, subtype: "error_max_turns", result: "hit the turn limit" });
+    const notes = dispatchNotes({ ok: false, exitCode: 1, stderr: "", stdout });
+    expect(notes).toEqual(["session:abc", "exit 1: error_max_turns — hit the turn limit"]);
+  });
+
+  test("on failure without JSON falls back to the stderr tail", () => {
+    const notes = dispatchNotes({ ok: false, exitCode: 2, stderr: "boom", stdout: "not json" });
+    expect(notes).toEqual(["exit 2: boom"]);
   });
 });

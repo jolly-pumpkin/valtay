@@ -21,7 +21,7 @@ import {
 } from "./store.ts";
 import { pathExists } from "../detect.ts";
 import { advance } from "./orchestrator.ts";
-import { providerFor, type Provider, type DispatchResult } from "./provider.ts";
+import { providerFor, dispatchNotes, type Provider, type DispatchResult } from "./provider.ts";
 import { parsePlanUnits, topoSortWaves, parseReport, type PlanUnit } from "./plan-parser.ts";
 import { buildPhasePrompt, buildSubagentPrompt, type PromptContext } from "./prompts.ts";
 
@@ -117,7 +117,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
       exit_code: planResult.exitCode,
       duration_ms: Date.now() - planStart,
       usage: planResult.usage,
-      notes: [],
+      notes: dispatchNotes(planResult),
     });
 
     if (!planResult.ok) {
@@ -231,7 +231,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
               exit_code: result.exitCode,
               duration_ms: Date.now() - buildStart,
               usage: result.usage,
-              notes: [],
+              notes: dispatchNotes(result),
             });
 
             const reportContent = await readArtifact(theRun, `reports/${unit.id}.md`);
@@ -377,7 +377,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
       exit_code: verifyResult.exitCode,
       duration_ms: Date.now() - verifyStart,
       usage: verifyResult.usage,
-      notes: [],
+      notes: dispatchNotes(verifyResult),
     });
 
     if (!verifyResult.ok) {

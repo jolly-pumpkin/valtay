@@ -60,7 +60,9 @@ function extractDeps(selfId: string, content: string): string[] {
   }
 
   const sectionText = sectionLines.join("\n").trim();
-  if (!sectionText || /^none$/i.test(sectionText)) {
+  // "None", "None — independent of RU-1", "None. Uses RU-2's types." all mean none:
+  // a planner explaining why there are no dependencies must not create one.
+  if (!sectionText || /^none\b/i.test(sectionText)) {
     return [];
   }
 
@@ -113,17 +115,22 @@ export function topoSortWaves(units: PlanUnit[]): Wave[] {
   const remaining = new Set(units.map((u) => u.id));
   const waves: Wave[] = [];
 
+  // A dependency on a unit that is not in this set was satisfied earlier — the
+  // retry loop re-sorts only the units still pending, and their finished
+  // prerequisites are no longer in the list.
+  const satisfied = (d: string) => placed.has(d) || !byId.has(d);
+
   while (remaining.size > 0) {
     const ready: PlanUnit[] = [];
     for (const id of remaining) {
       const unit = byId.get(id)!;
-      if (unit.deps.every((d) => placed.has(d))) {
+      if (unit.deps.every(satisfied)) {
         ready.push(unit);
       }
     }
 
     if (ready.length === 0) {
-      throw new Error("Dependency cycle");
+      throw new Error(`Dependency cycle among ${[...remaining].join(", ")}`);
     }
 
     for (const unit of ready) {

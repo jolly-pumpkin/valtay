@@ -271,3 +271,34 @@ describe("parseReport", () => {
     expect(reports[3]!.files).toBeUndefined();
   });
 });
+
+describe("dependency edge cases surfaced by run verify-blind", () => {
+  test("a Dependencies section that starts with None creates no dependency, even if it names a unit", async () => {
+    const { mkdtemp, mkdir, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { resolve } = await import("node:path");
+    const dir = await mkdtemp(resolve(tmpdir(), "vt-deps-"));
+    await mkdir(resolve(dir, "briefs"));
+    await writeFile(resolve(dir, "briefs/RU-1.md"), "# Brief: RU-1\n\n## Layers\n\n## Dependencies\n\nNone — this is the first unit.\n");
+    await writeFile(resolve(dir, "briefs/RU-2.md"), "# Brief: RU-2\n\n## Layers\n\n## Dependencies\n\nNone — independent of RU-1. Uses only existing exports.\n");
+    await writeFile(resolve(dir, "briefs/RU-3.md"), "# Brief: RU-3\n\n## Layers\n\n## Dependencies\n\nNeeds the types RU-1 adds.\n");
+    const units = await parsePlanUnits({ dir, meta: {} as never });
+    expect(units.find((u) => u.id === "RU-2")!.deps).toEqual([]);
+    expect(units.find((u) => u.id === "RU-3")!.deps).toEqual(["RU-1"]);
+  });
+
+  test("a dependency on a unit outside the set counts as satisfied (retry re-sort)", () => {
+    const pending: PlanUnit[] = [{ id: "RU-2", briefPath: "briefs/RU-2.md", deps: ["RU-1"], files: [] }];
+    const waves = topoSortWaves(pending);
+    expect(waves).toHaveLength(1);
+    expect(waves[0]!.units.map((u) => u.id)).toEqual(["RU-2"]);
+  });
+
+  test("a real cycle still throws and names the units", () => {
+    const units: PlanUnit[] = [
+      { id: "RU-1", briefPath: "b/RU-1.md", deps: ["RU-2"], files: [] },
+      { id: "RU-2", briefPath: "b/RU-2.md", deps: ["RU-1"], files: [] },
+    ];
+    expect(() => topoSortWaves(units)).toThrow(/Dependency cycle among RU-1, RU-2/);
+  });
+});
