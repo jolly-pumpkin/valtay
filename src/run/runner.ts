@@ -1,6 +1,6 @@
 import { resolve } from "path";
 import { mkdir } from "node:fs/promises";
-import { readRunspec, designSection, type Runspec } from "../runspec.ts";
+import { readRunspec, designSection, sha256, type Runspec } from "../runspec.ts";
 import { resolveConfig, bindingFor } from "../config.ts";
 import { createWorktree, removeWorktree, worktreePath, git } from "../worktree.ts";
 import {
@@ -13,13 +13,15 @@ import {
   writeArtifact,
   readLedger,
   writeLedger,
+  appendInvocation,
   type Run,
   type LayerReport,
   type BuildLedger,
+  type InvocationRecord,
 } from "./store.ts";
 import { pathExists } from "../detect.ts";
 import { advance } from "./orchestrator.ts";
-import { providerFor, type Provider } from "./provider.ts";
+import { providerFor, type Provider, type DispatchResult } from "./provider.ts";
 import { parsePlanUnits, topoSortWaves, parseReport, type PlanUnit } from "./plan-parser.ts";
 import { buildPhasePrompt, buildSubagentPrompt, type PromptContext } from "./prompts.ts";
 
@@ -95,11 +97,27 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
     const planProvider = factory(planBinding.host);
     const planPrompt = await buildPhasePrompt("plan", ctx);
 
+    const planStart = Date.now();
     const planResult = await planProvider.dispatch(planPrompt, {
       cwd: repoRoot,
       model: planBinding.model,
       effort: planBinding.effort,
       write: false,
+      artifactDir: theRun.dir,
+    });
+
+    await appendInvocation(theRun, {
+      ts: new Date().toISOString(),
+      phase: "plan",
+      attempt: 1,
+      host: planBinding.host,
+      model: planBinding.model,
+      effort: planBinding.effort,
+      prompt_sha: sha256(planPrompt),
+      exit_code: planResult.exitCode,
+      duration_ms: Date.now() - planStart,
+      usage: planResult.usage,
+      notes: [],
     });
 
     if (!planResult.ok) {
@@ -193,6 +211,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
         const waveResults = await Promise.all(
           worktrees.map(async ({ unit, branch, wtPath }) => {
             const prompt = await buildSubagentPrompt(unit.id, ctx);
+            const buildStart = Date.now();
             const result = await buildProvider.dispatch(prompt, {
               cwd: wtPath,
               model: buildBinding.model,
@@ -200,17 +219,48 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
               write: true,
             });
 
+            await appendInvocation(theRun, {
+              ts: new Date().toISOString(),
+              phase: "build",
+              unit: unit.id,
+              attempt: 1,
+              host: buildBinding.host,
+              model: buildBinding.model,
+              effort: buildBinding.effort,
+              prompt_sha: sha256(prompt),
+              exit_code: result.exitCode,
+              duration_ms: Date.now() - buildStart,
+              usage: result.usage,
+              notes: [],
+            });
+
             const reportContent = await readArtifact(theRun, `reports/${unit.id}.md`);
             const layers: LayerReport[] = reportContent
               ? parseReport(unit.id, reportContent)
               : [{ unit: unit.id, layer: "L1", status: result.ok ? "done" : "blocked", reason: result.ok ? undefined : result.stderr }];
 
-            return { unit: unit.id, layers, branch };
+            return { unit: unit.id, layers, branch, files: unit.files };
           }),
         );
 
-        // Merge unit branches into integration worktree (not user's checkout)
+        // Fence detection and merge unit branches into integration worktree
         for (const result of waveResults) {
+          // Detect fence violations before merge
+          let fenceViolations: string[] = [];
+          if (result.files.length > 0) {
+            const diffResult = await git(integrationWtPath, [
+              "diff", "--name-only", `${integrationBranch}...${result.branch}`,
+            ]);
+            if (diffResult.ok && diffResult.stdout) {
+              const touchedFiles = diffResult.stdout.split("\n").filter((f) => f.trim());
+              const allowedSet = new Set(result.files);
+              fenceViolations = touchedFiles.filter((f) => !allowedSet.has(f));
+            }
+          }
+          if (fenceViolations.length > 0) {
+            console.log(`⚠ ${result.unit}: fence violations: ${fenceViolations.join(", ")}`);
+          }
+
           const hasDone = result.layers.some((l) => l.status === "done");
           if (hasDone) {
             const mergeResult = await git(integrationWtPath, [
@@ -227,15 +277,14 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
               }
             }
           }
-        }
 
-        // Update ledger
-        for (const result of waveResults) {
+          // Update ledger with fence violations
           const existing = ledger.units.findIndex((u) => u.unit === result.unit);
+          const entry = { unit: result.unit, layers: result.layers, branch: result.branch, fenceViolations };
           if (existing >= 0) {
-            ledger.units[existing] = { unit: result.unit, layers: result.layers, branch: result.branch };
+            ledger.units[existing] = entry;
           } else {
-            ledger.units.push({ unit: result.unit, layers: result.layers, branch: result.branch });
+            ledger.units.push(entry);
           }
         }
         await writeLedger(theRun, ledger);
@@ -308,11 +357,27 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
     const verifyProvider = factory(verifyBinding.host);
     const verifyPrompt = await buildPhasePrompt("verify", ctx);
 
+    const verifyStart = Date.now();
     const verifyResult = await verifyProvider.dispatch(verifyPrompt, {
       cwd: verifyCwd,
       model: verifyBinding.model,
       effort: verifyBinding.effort,
       write: false,
+      artifactDir: theRun.dir,
+    });
+
+    await appendInvocation(theRun, {
+      ts: new Date().toISOString(),
+      phase: "verify",
+      attempt: 1,
+      host: verifyBinding.host,
+      model: verifyBinding.model,
+      effort: verifyBinding.effort,
+      prompt_sha: sha256(verifyPrompt),
+      exit_code: verifyResult.exitCode,
+      duration_ms: Date.now() - verifyStart,
+      usage: verifyResult.usage,
+      notes: [],
     });
 
     if (!verifyResult.ok) {

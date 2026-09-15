@@ -6,6 +6,7 @@ export interface PlanUnit {
   id: string;
   briefPath: string;
   deps: string[];
+  files: string[];
 }
 
 export interface Wave {
@@ -29,7 +30,8 @@ export async function parsePlanUnits(run: Run): Promise<PlanUnit[]> {
     const content = await Bun.file(resolve(briefsDir, filename)).text();
 
     const deps = extractDeps(id, content);
-    units.push({ id, briefPath, deps });
+    const files = extractFiles(content);
+    units.push({ id, briefPath, deps, files });
   }
 
   return units.sort((a, b) => {
@@ -69,6 +71,35 @@ function extractDeps(selfId: string, content: string): string[] {
     const numB = parseInt(b.replace(/^RU-/, ""), 10);
     return numA - numB;
   });
+}
+
+/**
+ * Extract the union of files from all `- **Files:** \`a\`, \`b\`` lines in the
+ * brief's ## Layers section. Returns deduped, sorted, repo-relative paths.
+ */
+function extractFiles(content: string): string[] {
+  const lines = content.split("\n");
+  let inLayers = false;
+  const files = new Set<string>();
+
+  for (const line of lines) {
+    if (/^## Layers/i.test(line)) {
+      inLayers = true;
+      continue;
+    }
+    if (inLayers && /^## /.test(line)) break;
+    if (inLayers) {
+      const match = line.match(/\*\*Files:\*\*\s*(.+)/);
+      if (match) {
+        const backtickPaths = match[1]!.match(/`([^`]+)`/g);
+        if (backtickPaths) {
+          for (const p of backtickPaths) files.add(p.replace(/`/g, ""));
+        }
+      }
+    }
+  }
+
+  return [...files].sort();
 }
 
 /**

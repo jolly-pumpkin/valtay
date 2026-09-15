@@ -7,7 +7,7 @@ import { parseRunspec, sha256 } from "../runspec.ts";
 import {
   appendApproval,
   appendContestation,
-  appendManifest,
+  appendInvocation,
   createRun,
   findRun,
   isApproved,
@@ -15,7 +15,7 @@ import {
   loadRun,
   readContestations,
   readLedger,
-  readManifest,
+  readInvocations,
   readRetryState,
   readState,
   runDir,
@@ -26,7 +26,7 @@ import {
   writeState,
   type ApprovalRecord,
   type BuildLedger,
-  type ManifestRecord,
+  type InvocationRecord,
   type RetryState,
   type Run,
 } from "./store.ts";
@@ -164,22 +164,71 @@ describe("approvals bind to artifact hashes", () => {
   });
 });
 
-describe("manifest", () => {
-  test("appends one record per artifact, in order", async () => {
+describe("invocations", () => {
+  test("appends one record per invocation, in order", async () => {
     const run = await newRun();
-    const record = (phase: "plan" | "build"): ManifestRecord => ({
+    const record = (phase: "plan" | "build"): InvocationRecord => ({
       ts: new Date().toISOString(),
       phase,
-      artifact: { path: `${phase}.json`, sha: sha256(phase) },
+      attempt: 1,
+      host: "claude",
+      model: "sonnet",
+      prompt_sha: sha256(phase),
+      exit_code: 0,
+      duration_ms: 1000,
       notes: [],
     });
 
-    await appendManifest(run, record("plan"));
-    await appendManifest(run, record("build"));
+    await appendInvocation(run, record("plan"));
+    await appendInvocation(run, record("build"));
 
-    const manifest = await readManifest(run);
-    expect(manifest).toHaveLength(2);
-    expect(manifest.map((r) => r.phase)).toEqual(["plan", "build"]);
+    const records = await readInvocations(run);
+    expect(records).toHaveLength(2);
+    expect(records.map((r) => r.phase)).toEqual(["plan", "build"]);
+  });
+
+  test("records with usage round-trip correctly", async () => {
+    const run = await newRun();
+    const rec: InvocationRecord = {
+      ts: new Date().toISOString(),
+      phase: "plan",
+      attempt: 1,
+      host: "claude",
+      model: "opus",
+      effort: "high",
+      prompt_sha: sha256("test"),
+      exit_code: 0,
+      duration_ms: 5000,
+      usage: { input_tokens: 1000, output_tokens: 500, cost_usd: 0.42 },
+      notes: ["first run"],
+    };
+
+    await appendInvocation(run, rec);
+    const records = await readInvocations(run);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.usage).toEqual({ input_tokens: 1000, output_tokens: 500, cost_usd: 0.42 });
+    expect(records[0]!.effort).toBe("high");
+    expect(records[0]!.notes).toEqual(["first run"]);
+  });
+
+  test("build invocation records unit id", async () => {
+    const run = await newRun();
+    const rec: InvocationRecord = {
+      ts: new Date().toISOString(),
+      phase: "build",
+      unit: "RU-1",
+      attempt: 1,
+      host: "claude",
+      model: "sonnet",
+      prompt_sha: sha256("build"),
+      exit_code: 0,
+      duration_ms: 3000,
+      notes: [],
+    };
+
+    await appendInvocation(run, rec);
+    const records = await readInvocations(run);
+    expect(records[0]!.unit).toBe("RU-1");
   });
 });
 
@@ -195,6 +244,7 @@ describe("ledger", () => {
             { unit: "RU-1", layer: "L2", status: "blocked", reason: "missing dep" },
           ],
           branch: "valtay/missing-RU-1",
+          fenceViolations: [],
         },
       ],
       updated: "",
