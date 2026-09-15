@@ -11,11 +11,16 @@ function spec(body: string): string {
   return `---\nrun: demo\nhost: claude\nmodel: sonnet\n---\n\n# Demo\n\n${body}\n`;
 }
 
-const COMPLETE = spec(
+function crossSpec(body: string): string {
+  return `---\nrun: demo\nhost: claude\nmodel: sonnet\nphases:\n  verify: { host: openai, model: o3 }\n---\n\n# Demo\n\n${body}\n`;
+}
+
+const COMPLETE_BODY =
   "## Design\n\nDo the thing.\n\n" +
-    "## Out of scope\n\nNONE\n\n" +
-    "## Notes\n\nNONE\n"
-);
+  "## Out of scope\n\nNONE\n\n" +
+  "## Notes\n\nNONE\n";
+
+const COMPLETE = crossSpec(COMPLETE_BODY);
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "valtay-check-"));
@@ -47,6 +52,25 @@ describe("checkRunspec", () => {
     const findings = checkRunspec(parsed);
 
     expect(findings.some((f) => f.rule === "has-todo")).toBe(true);
+  });
+
+  test("same-binding-verify warns when build and verify share host and model", () => {
+    const parsed = parseRunspec(spec(COMPLETE_BODY), "runspec.md");
+    const findings = checkRunspec(parsed);
+
+    expect(findings).toContainEqual({
+      level: "warn",
+      rule: "same-binding-verify",
+      message:
+        "verify shares build's host and model; prefer a verifier at least as capable on a different vendor (invariant 9)",
+    });
+  });
+
+  test("same-binding-verify does not warn when verify uses a different binding", () => {
+    const parsed = parseRunspec(crossSpec(COMPLETE_BODY), "runspec.md");
+    const findings = checkRunspec(parsed);
+
+    expect(findings.every((f) => f.rule !== "same-binding-verify")).toBe(true);
   });
 });
 
