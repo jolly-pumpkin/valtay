@@ -7,6 +7,7 @@ export interface PlanUnit {
   briefPath: string;
   deps: string[];
   files: string[];
+  checkpoint?: string;
 }
 
 export interface Wave {
@@ -16,11 +17,15 @@ export interface Wave {
 /**
  * Read all brief files from a run's `briefs/` directory and parse each one
  * into a PlanUnit with its dependency list extracted from the `## Dependencies` section.
+ * Also reads plan.md to fill `checkpoint` from each unit's heading section.
  */
 export async function parsePlanUnits(run: Run): Promise<PlanUnit[]> {
   const briefsDir = resolve(run.dir, "briefs");
   const entries = await readdir(briefsDir);
   const mdFiles = entries.filter((f) => f.endsWith(".md")).sort();
+
+  // Parse checkpoints from plan.md if it exists
+  const checkpoints = await extractCheckpoints(run.dir);
 
   const units: PlanUnit[] = [];
 
@@ -31,7 +36,8 @@ export async function parsePlanUnits(run: Run): Promise<PlanUnit[]> {
 
     const deps = extractDeps(id, content);
     const files = extractFiles(content);
-    units.push({ id, briefPath, deps, files });
+    const checkpoint = checkpoints.get(id);
+    units.push({ id, briefPath, deps, files, ...(checkpoint !== undefined && { checkpoint }) });
   }
 
   return units.sort((a, b) => {
@@ -39,6 +45,43 @@ export async function parsePlanUnits(run: Run): Promise<PlanUnit[]> {
     const numB = parseInt(b.id.replace(/^RU-/, ""), 10);
     return numA - numB;
   });
+}
+
+/**
+ * Parse `**Checkpoint:** \`<cmd>\`` lines from plan.md, keyed by the
+ * `## RU-N` heading they appear under.
+ */
+async function extractCheckpoints(runDirPath: string): Promise<Map<string, string>> {
+  const planPath = resolve(runDirPath, "plan.md");
+  const planFile = Bun.file(planPath);
+  const map = new Map<string, string>();
+
+  if (!(await planFile.exists())) return map;
+
+  const content = await planFile.text();
+  const lines = content.split("\n");
+  let currentUnit: string | null = null;
+
+  for (const line of lines) {
+    const unitMatch = line.match(/^## (RU-\d+)/);
+    if (unitMatch) {
+      currentUnit = unitMatch[1]!;
+      continue;
+    }
+    // A layer heading (### L1) ends the unit's preamble
+    if (/^### /.test(line)) {
+      currentUnit = null;
+      continue;
+    }
+    if (currentUnit) {
+      const cpMatch = line.match(/\*\*Checkpoint:\*\*\s*`([^`]+)`/);
+      if (cpMatch) {
+        map.set(currentUnit, cpMatch[1]!);
+      }
+    }
+  }
+
+  return map;
 }
 
 function extractDeps(selfId: string, content: string): string[] {

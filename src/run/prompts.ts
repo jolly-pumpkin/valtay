@@ -8,6 +8,7 @@ export interface PromptContext {
   runspecPath: string;  // path to runspec.md in the run dir
   baseCommit?: string;           // pre-build HEAD for verify diffs
   integrationBranch?: string;    // runner-owned branch name
+  checkpointPath?: string;       // absolute path to checkpoint.md when checkpoints were run
 }
 
 const ASSETS_DIR = resolve(import.meta.dir, "../../assets");
@@ -62,6 +63,7 @@ export async function buildPhasePrompt(phase: PhaseId, ctx: PromptContext): Prom
   ];
   if (ctx.baseCommit) header.push(`Base commit: ${ctx.baseCommit}`);
   if (ctx.integrationBranch) header.push(`Integration branch: ${ctx.integrationBranch}`);
+  if (ctx.checkpointPath) header.push(`Checkpoint results: ${ctx.checkpointPath}`);
 
   return `${header.join("\n")}
 

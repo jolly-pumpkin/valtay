@@ -20,18 +20,24 @@ decides whether drift is acceptable.
 ## What you are given
 
 The runner provides your run directory and runspec path in the prompt header
-above. Read:
+above. Read exactly three inputs:
 
-- `runspec.md` — the `## Design` section is the source of truth
-- `build.md` — what the builder says it did
-- The actual code diff (use `git diff` against the base branch)
+1. `runspec.md` — the `## Design` section is the source of truth
+2. The actual code diff (use `git diff` against the base branch)
+3. `checkpoint.md` — objective test results (may not exist if no checkpoints)
+
+**Do not read build.md or reports/.** The builder's account of its work is not
+evidence.
 
 ## What you produce
 
 Write `verify.json` to the run directory. Emit one JSON object, nothing else.
+Write the `evidence` field first (reasoning before verdict), then `status`,
+then `findings`.
 
 ```json
 {
+  "evidence": "what was read, what was compared to what, and why each candidate finding is or is not drift",
   "status": "clean | drift",
   "findings": [
     {
@@ -62,8 +68,7 @@ Write `verify.json` to the run directory. Emit one JSON object, nothing else.
 1. **Compare against the design, not against what you think is good.** The
    design is the contract. If the code does what the design asked for, it is
    clean, even if you would have designed it differently.
-2. **Read the actual code, not just build.md.** The builder's summary is
-   advisory. The diff is the truth.
+2. **Read the actual code, not build.md or reports/.** The diff is the truth.
 3. **Every finding cites a file.** A drift claim you cannot point to is a claim
    you should not make.
 4. **An empty findings array is a legitimate result.** Do not invent findings to
@@ -71,3 +76,5 @@ Write `verify.json` to the run directory. Emit one JSON object, nothing else.
 5. **Do not fix anything.** You are read-only. Report, do not repair.
 6. **Respect `## Out of scope`.** Something the design excluded is not drift
    when it is absent from the build.
+7. **A non-zero exit in checkpoint.md is a drift finding.** The design's build
+   contract is "tests green" — cite the failing test or type error.
