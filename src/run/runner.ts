@@ -47,6 +47,49 @@ export interface RunnerOpts {
   providerFactory?: (host: string) => Provider;
 }
 
+/**
+ * Run checkpoint commands for units that have them. Writes checkpoint.md
+ * to the run directory. Returns the path to checkpoint.md if any checkpoints
+ * were run, undefined otherwise.
+ */
+async function runCheckpoints(
+  units: PlanUnit[],
+  cwd: string,
+  runDirPath: string,
+): Promise<string | undefined> {
+  const unitsWithCheckpoints = units.filter((u) => u.checkpoint);
+  if (unitsWithCheckpoints.length === 0) return undefined;
+
+  const sections: string[] = [];
+
+  for (const unit of unitsWithCheckpoints) {
+    const start = Date.now();
+    const proc = Bun.spawn(["sh", "-c", unit.checkpoint!], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const timeout = setTimeout(() => proc.kill(), 10 * 60 * 1000);
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const exitCode = await proc.exited;
+    clearTimeout(timeout);
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+
+    const combined = (stdout + stderr).split("\n");
+    const last200 = combined.slice(-200).join("\n").trimEnd();
+
+    sections.push(`## ${unit.id} — \`${unit.checkpoint}\` — exit ${exitCode} — ${elapsed}s\n\`\`\`\n${last200}\n\`\`\``);
+  }
+
+  const checkpointPath = resolve(runDirPath, "checkpoint.md");
+  await Bun.write(checkpointPath, sections.join("\n\n") + "\n");
+  return checkpointPath;
+}
+
 /** Clean up unit worktrees and branches after build completes. Keep integration branch. */
 async function cleanupWorktrees(
   repoRoot: string,
@@ -352,6 +395,13 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
     const verifyCwd = theRun.meta.integrationBranch
       ? worktreePath(runName, "integration")
       : repoRoot;
+
+    // Run checkpoints before verify dispatch
+    const units = await parsePlanUnits(theRun);
+    const checkpointPath = await runCheckpoints(units, verifyCwd, theRun.dir);
+    if (checkpointPath) {
+      ctx.checkpointPath = checkpointPath;
+    }
 
     const verifyBinding = bindingFor(config, "verify");
     const verifyProvider = factory(verifyBinding.host);

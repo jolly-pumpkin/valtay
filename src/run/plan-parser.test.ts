@@ -119,6 +119,78 @@ describe("parsePlanUnits", () => {
     const units = await parsePlanUnits(run);
     expect(units[0]!.files).toEqual([]);
   });
+
+  test("parses checkpoint from plan.md", async () => {
+    await Bun.write(
+      resolve(runDir, "plan.md"),
+      [
+        "# Plan",
+        "",
+        "## RU-1 — Implement Foo",
+        "",
+        "**Checkpoint:** `bun install && bun run test`",
+        "",
+        "### L1 — add types",
+        "- **Kind:** semantic",
+      ].join("\n"),
+    );
+    await Bun.write(
+      resolve(runDir, "briefs", "RU-1.md"),
+      "# RU-1\n\n## Dependencies\n\nNone\n",
+    );
+
+    const units = await parsePlanUnits(run);
+    expect(units[0]!.checkpoint).toBe("bun install && bun run test");
+  });
+
+  test("unit without checkpoint line has undefined checkpoint", async () => {
+    await Bun.write(
+      resolve(runDir, "plan.md"),
+      "# Plan\n\n## RU-1 — Test\n\n### L1 — do stuff\n",
+    );
+    await Bun.write(
+      resolve(runDir, "briefs", "RU-1.md"),
+      "# RU-1\n\n## Dependencies\n\nNone\n",
+    );
+
+    const units = await parsePlanUnits(run);
+    expect(units[0]!.checkpoint).toBeUndefined();
+  });
+
+  test("parses checkpoints for multiple units", async () => {
+    await Bun.write(
+      resolve(runDir, "plan.md"),
+      [
+        "# Plan",
+        "",
+        "## RU-1 — First",
+        "",
+        "**Checkpoint:** `bun test`",
+        "",
+        "### L1 — first layer",
+        "",
+        "## RU-2 — Second",
+        "",
+        "### L1 — second layer",
+      ].join("\n"),
+    );
+    await Bun.write(resolve(runDir, "briefs", "RU-1.md"), "# RU-1\n\n## Dependencies\n\nNone\n");
+    await Bun.write(resolve(runDir, "briefs", "RU-2.md"), "# RU-2\n\n## Dependencies\n\nRU-1\n");
+
+    const units = await parsePlanUnits(run);
+    expect(units[0]!.checkpoint).toBe("bun test");
+    expect(units[1]!.checkpoint).toBeUndefined();
+  });
+
+  test("works when plan.md does not exist", async () => {
+    await Bun.write(
+      resolve(runDir, "briefs", "RU-1.md"),
+      "# RU-1\n\n## Dependencies\n\nNone\n",
+    );
+
+    const units = await parsePlanUnits(run);
+    expect(units[0]!.checkpoint).toBeUndefined();
+  });
 });
 
 describe("topoSortWaves", () => {

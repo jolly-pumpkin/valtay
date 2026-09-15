@@ -73,6 +73,20 @@ describe("buildPhasePrompt", () => {
     expect(prompt).toContain("# Role: verifier");
   });
 
+  test("verify prompt includes checkpoint path when present", async () => {
+    const ctxWithCheckpoint: PromptContext = {
+      ...CTX,
+      checkpointPath: "/fake/repo/.valtay/runs/test-run/checkpoint.md",
+    };
+    const prompt = await buildPhasePrompt("verify", ctxWithCheckpoint);
+    expect(prompt).toContain("Checkpoint results: /fake/repo/.valtay/runs/test-run/checkpoint.md");
+  });
+
+  test("verify prompt omits checkpoint line when not present", async () => {
+    const prompt = await buildPhasePrompt("verify", CTX);
+    expect(prompt).not.toContain("Checkpoint results:");
+  });
+
   test("build phase throws", async () => {
     await expect(buildPhasePrompt("build", CTX)).rejects.toThrow(
       /runner handles build dispatch/i
