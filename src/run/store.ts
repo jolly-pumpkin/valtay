@@ -226,7 +226,7 @@ export interface UnitEntry {
   layers: LayerReport[];
   /** Subagent worktree branch name, if applicable */
   branch?: string;
-  fenceViolations: string[];
+  fenceViolations?: string[];
 }
 
 export interface BuildLedger {
