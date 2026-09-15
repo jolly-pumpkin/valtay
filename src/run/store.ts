@@ -3,6 +3,7 @@ import { appendFile, mkdir, readdir } from "node:fs/promises";
 import { pathExists } from "../detect.ts";
 import { sha256, type Runspec } from "../runspec.ts";
 import type { ResolvedConfig } from "../config.ts";
+import type { DispatchUsage } from "./provider.ts";
 
 export type PhaseId = "plan" | "build" | "verify";
 export type GateId = "verify";
@@ -38,20 +39,18 @@ export interface ArtifactRef {
   sha: string;
 }
 
-/**
- * One record per phase invocation, including failures and fallbacks (invariant 7).
- * Fields mirror design.md §17; `cost_usd`, `usage` and `permission_denials` come
- * straight off the host adapter's structured result.
- */
-/**
- * One record per artifact placed, for auditability.
- * Simpler than the old manifest — the orchestrator no longer invokes phases,
- * so there is no exit_code, duration, or retry count to record.
- */
-export interface ManifestRecord {
+export interface InvocationRecord {
   ts: string;
   phase: PhaseId;
-  artifact: ArtifactRef;
+  unit?: string;
+  attempt: number;
+  host: string;
+  model: string;
+  effort?: string;
+  prompt_sha: string;
+  exit_code: number;
+  duration_ms: number;
+  usage?: DispatchUsage;
   notes: string[];
 }
 
@@ -196,12 +195,12 @@ async function readJsonl<T>(path: string): Promise<T[]> {
     .map((line) => JSON.parse(line) as T);
 }
 
-export async function appendManifest(run: Run, record: ManifestRecord): Promise<void> {
-  await appendJsonl(resolve(run.dir, "manifest.jsonl"), record);
+export async function appendInvocation(run: Run, rec: InvocationRecord): Promise<void> {
+  await appendJsonl(resolve(run.dir, "manifest.jsonl"), rec);
 }
 
-export async function readManifest(run: Run): Promise<ManifestRecord[]> {
-  return readJsonl<ManifestRecord>(resolve(run.dir, "manifest.jsonl"));
+export async function readInvocations(run: Run): Promise<InvocationRecord[]> {
+  return readJsonl<InvocationRecord>(resolve(run.dir, "manifest.jsonl"));
 }
 
 // --- Build ledger types ---
@@ -227,6 +226,7 @@ export interface UnitEntry {
   layers: LayerReport[];
   /** Subagent worktree branch name, if applicable */
   branch?: string;
+  fenceViolations: string[];
 }
 
 export interface BuildLedger {

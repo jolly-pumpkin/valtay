@@ -43,6 +43,7 @@ describe("parsePlanUnits", () => {
     expect(units[0]!.id).toBe("RU-1");
     expect(units[0]!.briefPath).toBe("briefs/RU-1.md");
     expect(units[0]!.deps).toEqual([]);
+    expect(units[0]!.files).toEqual([]);
   });
 
   test("two units where RU-2 depends on RU-1", async () => {
@@ -82,14 +83,50 @@ describe("parsePlanUnits", () => {
     const units = await parsePlanUnits(run);
     expect(units[0]!.deps).toEqual([]);
   });
+
+  test("extracts files from layer Files lines, deduped and sorted", async () => {
+    await Bun.write(
+      resolve(runDir, "briefs", "RU-1.md"),
+      [
+        "# RU-1",
+        "",
+        "## Layers",
+        "",
+        "### L1 — add types",
+        "- **Kind:** semantic",
+        "- **Files:** `src/foo.ts`, `src/foo.test.ts`",
+        "",
+        "### L2 — add store",
+        "- **Kind:** semantic",
+        "- **Files:** `src/bar.ts`, `src/foo.ts`",
+        "",
+        "## Dependencies",
+        "",
+        "None",
+      ].join("\n"),
+    );
+
+    const units = await parsePlanUnits(run);
+    expect(units[0]!.files).toEqual(["src/bar.ts", "src/foo.test.ts", "src/foo.ts"]);
+  });
+
+  test("brief with no Files lines returns empty files array", async () => {
+    await Bun.write(
+      resolve(runDir, "briefs", "RU-1.md"),
+      "# RU-1\n\n## Layers\n\n### L1\n- **Kind:** semantic\n\n## Dependencies\n\nNone\n",
+    );
+
+    const units = await parsePlanUnits(run);
+    expect(units[0]!.files).toEqual([]);
+  });
 });
 
 describe("topoSortWaves", () => {
   test("all independent units land in one wave", () => {
     const units: PlanUnit[] = [
-      { id: "RU-1", briefPath: "briefs/RU-1.md", deps: [] },
-      { id: "RU-2", briefPath: "briefs/RU-2.md", deps: [] },
-      { id: "RU-3", briefPath: "briefs/RU-3.md", deps: [] },
+      { id: "RU-1", briefPath: "briefs/RU-1.md", deps: [], files: [] },
+      { id: "RU-2", briefPath: "briefs/RU-2.md", deps: [], files: [] },
+      { id: "RU-3", briefPath: "briefs/RU-3.md", deps: [], files: [] },
     ];
 
     const waves = topoSortWaves(units);
@@ -99,9 +136,9 @@ describe("topoSortWaves", () => {
 
   test("chain produces one unit per wave", () => {
     const units: PlanUnit[] = [
-      { id: "RU-1", briefPath: "briefs/RU-1.md", deps: [] },
-      { id: "RU-2", briefPath: "briefs/RU-2.md", deps: ["RU-1"] },
-      { id: "RU-3", briefPath: "briefs/RU-3.md", deps: ["RU-2"] },
+      { id: "RU-1", briefPath: "briefs/RU-1.md", deps: [], files: [] },
+      { id: "RU-2", briefPath: "briefs/RU-2.md", deps: ["RU-1"], files: [] },
+      { id: "RU-3", briefPath: "briefs/RU-3.md", deps: ["RU-2"], files: [] },
     ];
 
     const waves = topoSortWaves(units);
@@ -113,10 +150,10 @@ describe("topoSortWaves", () => {
 
   test("diamond dependency produces three waves", () => {
     const units: PlanUnit[] = [
-      { id: "RU-1", briefPath: "briefs/RU-1.md", deps: [] },
-      { id: "RU-2", briefPath: "briefs/RU-2.md", deps: ["RU-1"] },
-      { id: "RU-3", briefPath: "briefs/RU-3.md", deps: ["RU-1"] },
-      { id: "RU-4", briefPath: "briefs/RU-4.md", deps: ["RU-2", "RU-3"] },
+      { id: "RU-1", briefPath: "briefs/RU-1.md", deps: [], files: [] },
+      { id: "RU-2", briefPath: "briefs/RU-2.md", deps: ["RU-1"], files: [] },
+      { id: "RU-3", briefPath: "briefs/RU-3.md", deps: ["RU-1"], files: [] },
+      { id: "RU-4", briefPath: "briefs/RU-4.md", deps: ["RU-2", "RU-3"], files: [] },
     ];
 
     const waves = topoSortWaves(units);
@@ -128,8 +165,8 @@ describe("topoSortWaves", () => {
 
   test("cycle throws", () => {
     const units: PlanUnit[] = [
-      { id: "RU-1", briefPath: "briefs/RU-1.md", deps: ["RU-2"] },
-      { id: "RU-2", briefPath: "briefs/RU-2.md", deps: ["RU-1"] },
+      { id: "RU-1", briefPath: "briefs/RU-1.md", deps: ["RU-2"], files: [] },
+      { id: "RU-2", briefPath: "briefs/RU-2.md", deps: ["RU-1"], files: [] },
     ];
 
     expect(() => topoSortWaves(units)).toThrow("Dependency cycle");
