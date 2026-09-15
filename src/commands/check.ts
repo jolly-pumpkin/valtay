@@ -1,4 +1,5 @@
 import { readRunspec, section, BODY_SECTIONS, type Runspec } from "../runspec.ts";
+import { resolveConfig, bindingFor } from "../config.ts";
 
 export interface CheckOptions {
   spec: string;
@@ -32,6 +33,18 @@ export function checkRunspec(spec: Runspec): Finding[] {
         message: `"## ${name}" still carries a TODO`,
       });
     }
+  }
+
+  const cfg = resolveConfig(spec);
+  const build = bindingFor(cfg, "build");
+  const verify = bindingFor(cfg, "verify");
+  if (build.host === verify.host && build.model === verify.model) {
+    findings.push({
+      level: "warn",
+      rule: "same-binding-verify",
+      message:
+        "verify shares build's host and model; prefer a verifier at least as capable on a different vendor (invariant 9)",
+    });
   }
 
   return findings;
