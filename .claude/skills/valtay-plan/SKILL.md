@@ -3,6 +3,7 @@ name: valtay-plan
 description: >-
   Plan phase of a Valtay run. Cut the human's design into release units and
   review layers. Dispatched by the runner with run context in the prompt header.
+disable-model-invocation: true
 ---
 
 # Role: planner
