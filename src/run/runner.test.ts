@@ -313,6 +313,136 @@ describe("runner", () => {
     expect(invocations[0]!.exit_code).toBe(1);
   });
 
+  test("checkpoint runner writes checkpoint.md and verify prompt includes checkpoint path", async () => {
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+    let capturedVerifyPrompt = "";
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      await Bun.write(
+        resolve(runDir, "plan.md"),
+        "# Plan\n\n## RU-1 — Test\n\n**Checkpoint:** `echo checkpoint-ok`\n\n### L1 — do stuff\n",
+      );
+      await Bun.write(resolve(runDir, "briefs", "RU-1.md"), "# Brief\n\n## Dependencies\n\nNone\n");
+    });
+
+    actions.set("build subagent for unit RU-1", async (opts) => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await Bun.write(resolve(opts.cwd, "src", "foo.ts"), "export const foo = 1;\n");
+      const addProc = Bun.spawn(["git", "add", "-A"], { cwd: opts.cwd, stdout: "ignore", stderr: "ignore" });
+      await addProc.exited;
+      const commitProc = Bun.spawn(["git", "commit", "-m", "build"], {
+        cwd: opts.cwd, stdout: "ignore", stderr: "ignore",
+        env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "t@t" },
+      });
+      await commitProc.exited;
+      await Bun.write(resolve(runDir, "reports", "RU-1.md"), "# Report: RU-1\n\n## L1\n- **Status:** done\n- **Files touched:** `src/foo.ts`\n");
+    });
+
+    // Capture the verify prompt to check for checkpoint path
+    const factory = (_host: string): Provider => ({
+      name: "fake",
+      async dispatch(prompt: string, opts: DispatchOpts): Promise<DispatchResult> {
+        for (const [key, action] of actions) {
+          if (prompt.includes(key)) {
+            await action(opts);
+            return { ok: true, exitCode: 0, stdout: "", stderr: "" };
+          }
+        }
+        // Verify phase — capture the prompt and write verify.json
+        if (prompt.includes('phase "verify"')) {
+          capturedVerifyPrompt = prompt;
+          const runDir = resolve(repo, ".valtay", "runs", "test-run");
+          await Bun.write(resolve(runDir, "verify.json"), JSON.stringify({ status: "clean", findings: [] }));
+        }
+        return { ok: true, exitCode: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    const result = await run({
+      spec: spec(),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: factory,
+    });
+
+    expect(result.outcome).toBe("complete");
+
+    // checkpoint.md should have been written
+    const runDir = resolve(repo, ".valtay", "runs", "test-run");
+    const cpContent = await Bun.file(resolve(runDir, "checkpoint.md")).text();
+    expect(cpContent).toContain("## RU-1");
+    expect(cpContent).toContain("`echo checkpoint-ok`");
+    expect(cpContent).toContain("exit 0");
+    expect(cpContent).toContain("checkpoint-ok");
+
+    // Verify prompt should include checkpoint path
+    expect(capturedVerifyPrompt).toContain("Checkpoint results:");
+    expect(capturedVerifyPrompt).toContain("checkpoint.md");
+  });
+
+  test("checkpoint runner omits checkpoint.md when no units have checkpoints", async () => {
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+    let capturedVerifyPrompt = "";
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      // No checkpoint line in plan.md
+      await Bun.write(resolve(runDir, "plan.md"), "# Plan\n\n## RU-1 — Test\n\n### L1 — do stuff\n");
+      await Bun.write(resolve(runDir, "briefs", "RU-1.md"), "# Brief\n\n## Dependencies\n\nNone\n");
+    });
+
+    actions.set("build subagent for unit RU-1", async (opts) => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await Bun.write(resolve(opts.cwd, "src", "foo.ts"), "export const foo = 1;\n");
+      const addProc = Bun.spawn(["git", "add", "-A"], { cwd: opts.cwd, stdout: "ignore", stderr: "ignore" });
+      await addProc.exited;
+      const commitProc = Bun.spawn(["git", "commit", "-m", "build"], {
+        cwd: opts.cwd, stdout: "ignore", stderr: "ignore",
+        env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "t@t" },
+      });
+      await commitProc.exited;
+      await Bun.write(resolve(runDir, "reports", "RU-1.md"), "# Report: RU-1\n\n## L1\n- **Status:** done\n- **Files touched:** `src/foo.ts`\n");
+    });
+
+    const factory = (_host: string): Provider => ({
+      name: "fake",
+      async dispatch(prompt: string, opts: DispatchOpts): Promise<DispatchResult> {
+        for (const [key, action] of actions) {
+          if (prompt.includes(key)) {
+            await action(opts);
+            return { ok: true, exitCode: 0, stdout: "", stderr: "" };
+          }
+        }
+        if (prompt.includes('phase "verify"')) {
+          capturedVerifyPrompt = prompt;
+          const runDir = resolve(repo, ".valtay", "runs", "test-run");
+          await Bun.write(resolve(runDir, "verify.json"), JSON.stringify({ status: "clean", findings: [] }));
+        }
+        return { ok: true, exitCode: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    const result = await run({
+      spec: spec(),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: factory,
+    });
+
+    expect(result.outcome).toBe("complete");
+
+    // No checkpoint.md should exist
+    const runDir = resolve(repo, ".valtay", "runs", "test-run");
+    const exists = await Bun.file(resolve(runDir, "checkpoint.md")).exists();
+    expect(exists).toBe(false);
+
+    // Verify prompt should not include checkpoint path
+    expect(capturedVerifyPrompt).not.toContain("Checkpoint results:");
+  });
+
   test("detects fence violations when unit touches files outside its declared set", async () => {
     const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
 
