@@ -397,6 +397,37 @@ test("phase skills have valid frontmatter", async () => {
   }
 });
 
+test("repo with package.json gets setup line in valtay.toml", async () => {
+  const repo = await makeRepo("repo");
+  await writeFile(resolve(repo, "package.json"), '{"name":"test"}');
+
+  await runInit({ path: repo });
+
+  const toml = Bun.TOML.parse(await readFile(resolve(repo, "valtay.toml"), "utf-8")) as any;
+  expect(toml.setup).toBe("bun install --frozen-lockfile");
+});
+
+test("repo without package.json omits setup line", async () => {
+  const repo = await makeRepo("repo");
+
+  await runInit({ path: repo });
+
+  const toml = Bun.TOML.parse(await readFile(resolve(repo, "valtay.toml"), "utf-8")) as any;
+  expect(toml.setup).toBeUndefined();
+});
+
+test("workspace with package.json gets setup line in valtay.toml", async () => {
+  const ws = resolve(root, "work");
+  await mkdir(ws, { recursive: true });
+  await writeFile(resolve(ws, "package.json"), '{"name":"workspace"}');
+  await makeRepo("work", "web");
+
+  await runInit({ path: ws });
+
+  const toml = Bun.TOML.parse(await readFile(resolve(ws, "valtay.toml"), "utf-8")) as any;
+  expect(toml.setup).toBe("bun install --frozen-lockfile");
+});
+
 test("repo names needing escapes stay valid TOML", async () => {
   const ws = resolve(root, "work");
   await mkdir(ws, { recursive: true });
