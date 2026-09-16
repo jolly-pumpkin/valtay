@@ -93,11 +93,15 @@ function defaultsSection(hosts: HostSpec[]): string {
 const PRECEDENCE =
   "# Precedence: runspec frontmatter -> ./valtay.toml -> ~/.valtay/config.toml -> built-in";
 
-export function renderRepoConfig(hosts: HostSpec[]): string {
+function setupLine(setup?: string): string {
+  return setup ? `\nsetup = ${tomlString(setup)}` : "";
+}
+
+export function renderRepoConfig(hosts: HostSpec[], setup?: string): string {
   return `# valtay.toml - repo config
 ${PRECEDENCE}
 
-${defaultsSection(hosts)}
+${defaultsSection(hosts)}${setupLine(setup)}
 
 ${hostTables(hosts)}
 
@@ -114,7 +118,7 @@ ${hostTables(hosts)}
 `;
 }
 
-export function renderWorkspaceConfig(hosts: HostSpec[], repos: string[]): string {
+export function renderWorkspaceConfig(hosts: HostSpec[], repos: string[], setup?: string): string {
   const list =
     repos.length > 0
       ? `repos = [${repos.map(tomlString).join(", ")}]`
@@ -123,7 +127,7 @@ export function renderWorkspaceConfig(hosts: HostSpec[], repos: string[]): strin
   return `# valtay.toml - workspace config
 ${PRECEDENCE}
 
-${defaultsSection(hosts)}
+${defaultsSection(hosts)}${setupLine(setup)}
 
 [workspace]
 ${list}
@@ -206,9 +210,13 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
   const repos = mode === "workspace" ? await findChildRepos(root) : [];
   const hosts = await detectHosts([root, ...repos.map((r) => resolve(root, r))]);
 
+  const setup = (await pathExists(resolve(root, "package.json")))
+    ? "bun install --frozen-lockfile"
+    : undefined;
+
   const configPath = resolve(root, "valtay.toml");
   const content =
-    mode === "repo" ? renderRepoConfig(hosts) : renderWorkspaceConfig(hosts, repos);
+    mode === "repo" ? renderRepoConfig(hosts, setup) : renderWorkspaceConfig(hosts, repos, setup);
   const config = await writeUnlessPresent(configPath, content, options.force === true);
 
   // Blank by design: it keeps .valtay/ present in git and gives you somewhere to
