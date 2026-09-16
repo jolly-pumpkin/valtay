@@ -27,6 +27,7 @@ export interface ResolvedConfig {
   default: PhaseBinding;
   phases: Partial<Record<PhaseId, Partial<PhaseBinding>>>;
   retries: number;
+  setup?: string;
 }
 
 /**
@@ -76,7 +77,9 @@ export function resolveConfig(spec: Runspec, repoRoot?: string): ResolvedConfig 
 
   const retries = typeof fm["retries"] === "number" ? fm["retries"] : 1;
 
-  return { default: defaultBinding, phases, retries };
+  const setup = typeof fm["setup"] === "string" ? fm["setup"] : (toml["setup"] || undefined);
+
+  return { default: defaultBinding, phases, retries, setup };
 }
 
 /** Resolve the binding for a specific phase, with defaults filled in. */
