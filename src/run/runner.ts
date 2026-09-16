@@ -1,5 +1,6 @@
 import { resolve } from "path";
 import { mkdir } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { readRunspec, designSection, sha256, type Runspec } from "../runspec.ts";
 import { resolveConfig, bindingFor } from "../config.ts";
 import { createWorktree, removeWorktree, worktreePath, git } from "../worktree.ts";
@@ -107,6 +108,63 @@ async function cleanupWorktrees(
   }
 }
 
+/** Write the fileset manifest for a unit. Returns the absolute path to the manifest. */
+export async function writeFilesetManifest(
+  runDir: string,
+  unitId: string,
+  files: string[],
+  reportPath: string,
+): Promise<string> {
+  const dir = resolve(runDir, "filesets");
+  await mkdir(dir, { recursive: true });
+  const manifestPath = resolve(dir, `${unitId}.txt`);
+  const content = [...files, reportPath].join("\n") + "\n";
+  await Bun.write(manifestPath, content);
+  return manifestPath;
+}
+
+/** Write .claude/settings.local.json into the worktree with the fileset hook config. */
+export async function writeHookConfig(
+  wtPath: string,
+  assetsDir: string,
+  _filesetPath: string,
+): Promise<void> {
+  const config = {
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: "Edit|Write|NotebookEdit",
+          hooks: [
+            {
+              type: "command",
+              command: `bun ${resolve(assetsDir, "hooks/fileset.ts")}`,
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const configDir = resolve(wtPath, ".claude");
+  await mkdir(configDir, { recursive: true });
+  await Bun.write(
+    resolve(configDir, "settings.local.json"),
+    JSON.stringify(config, null, 2) + "\n",
+  );
+}
+
+/** Write the git exclude file and return env vars to keep .claude/settings.local.json off the branch. */
+export function hookExcludeEnv(runDir: string): Record<string, string> {
+  const hooksDir = resolve(runDir, "hooks");
+  mkdirSync(hooksDir, { recursive: true });
+  const excludePath = resolve(hooksDir, "exclude");
+  writeFileSync(excludePath, ".claude/settings.local.json\n");
+  return {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "core.excludesFile",
+    GIT_CONFIG_VALUE_0: excludePath,
+  };
+}
+
 export async function run(opts: RunnerOpts): Promise<RunResult> {
   const { spec, repoRoot, runName } = opts;
   const factory = opts.providerFactory ?? providerFor;
@@ -187,6 +245,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
     const buildBinding = bindingFor(config, "build");
     const buildProvider = factory(buildBinding.host);
     await mkdir(resolve(theRun.dir, "reports"), { recursive: true });
+    const assetsDir = resolve(import.meta.dir, "../../assets");
 
     // Record base commit and create runner-owned integration branch
     const integrationBranch = `valtay/${runName}`;
@@ -241,6 +300,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
       const waves = topoSortWaves(pendingUnits);
       const ledger: BuildLedger = existingLedger ?? { units: [], updated: "" };
 
+      let waveIdx = 0;
       for (const wave of waves) {
         // Check for file-set conflicts before dispatching
         const allWaveFiles = wave.units.flatMap((u) => u.files);
@@ -253,6 +313,9 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
           await cleanupWorktrees(repoRoot, unitWorktreePaths, runName, units);
           return { outcome: "failed", phase: "build", reason };
         }
+
+        // Snapshot checkout integrity before wave dispatch
+        const preWaveStatus = await git(repoRoot, ["status", "--porcelain"]);
 
         // Create worktrees serially from integration branch (avoid git lock contention)
         const worktrees: Array<{ unit: typeof wave.units[number]; branch: string; wtPath: string }> = [];
@@ -268,12 +331,21 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
         const waveResults = await Promise.all(
           worktrees.map(async ({ unit, branch, wtPath }) => {
             const prompt = await buildSubagentPrompt(unit.id, ctx);
+            const reportPath = resolve(theRun.dir, `reports/${unit.id}.md`);
+            const filesetPath = await writeFilesetManifest(theRun.dir, unit.id, unit.files, reportPath);
+            await writeHookConfig(wtPath, assetsDir, filesetPath);
+            const excludeEnv = hookExcludeEnv(theRun.dir);
+
             const buildStart = Date.now();
             const result = await buildProvider.dispatch(prompt, {
               cwd: wtPath,
               model: buildBinding.model,
               effort: buildBinding.effort,
               write: true,
+              env: {
+                VALTAY_FILESET: filesetPath,
+                ...excludeEnv,
+              },
             });
 
             await appendInvocation(theRun, {
@@ -311,11 +383,17 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
             if (diffResult.ok && diffResult.stdout) {
               const touchedFiles = diffResult.stdout.split("\n").filter((f) => f.trim());
               const allowedSet = new Set(result.files);
-              fenceViolations = touchedFiles.filter((f) => !allowedSet.has(f));
+              fenceViolations = touchedFiles.filter(
+                (f) => !allowedSet.has(f) && f !== ".claude/settings.local.json",
+              );
             }
           }
           if (fenceViolations.length > 0) {
-            console.log(`⚠ ${result.unit}: fence violations: ${fenceViolations.join(", ")}`);
+            console.log(`fence: ${result.unit}: ${fenceViolations.join(", ")}`);
+            for (const layer of result.layers) {
+              layer.status = "blocked";
+              layer.reason = `fence violations: ${fenceViolations.join(", ")}`;
+            }
           }
 
           const hasDone = result.layers.some((l) => l.status === "done");
@@ -344,7 +422,20 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
             ledger.units.push(entry);
           }
         }
+        // Checkout integrity check after wave dispatch + merge
+        const postWaveStatus = await git(repoRoot, ["status", "--porcelain"]);
+        if (preWaveStatus.stdout !== postWaveStatus.stdout) {
+          const diff = `checkout changed during wave ${waveIdx}`;
+          for (const result of waveResults) {
+            const entry = ledger.units.find((u) => u.unit === result.unit);
+            if (entry) {
+              entry.fenceViolations = [...(entry.fenceViolations ?? []), diff];
+            }
+          }
+        }
+
         await writeLedger(theRun, ledger);
+        waveIdx++;
       }
 
       // Write build summary

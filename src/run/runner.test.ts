@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { parseRunspec } from "../runspec.ts";
 import { readState, readInvocations, readLedger, type Run } from "./store.ts";
-import { run, type RunResult } from "./runner.ts";
+import { run, writeFilesetManifest, writeHookConfig, hookExcludeEnv, type RunResult } from "./runner.ts";
 import type { Provider, DispatchOpts, DispatchResult } from "./provider.ts";
 
 let root: string;
@@ -535,5 +535,50 @@ describe("runner", () => {
       expect(result.reason).toContain("src/shared.ts");
     }
     expect(buildDispatched).toBe(false);
+  });
+});
+
+describe("fileset helpers", () => {
+  test("writeFilesetManifest writes manifest and returns path", async () => {
+    const runDirPath = resolve(root, "run");
+    await mkdir(runDirPath, { recursive: true });
+
+    const result = await writeFilesetManifest(
+      runDirPath, "RU-1",
+      ["src/foo.ts", "src/bar.ts"],
+      "/abs/reports/RU-1.md",
+    );
+
+    expect(result).toBe(resolve(runDirPath, "filesets", "RU-1.txt"));
+    const content = await Bun.file(result).text();
+    expect(content).toBe("src/foo.ts\nsrc/bar.ts\n/abs/reports/RU-1.md\n");
+  });
+
+  test("writeHookConfig writes settings.local.json with hook config", async () => {
+    const wtPath = resolve(root, "wt");
+    await mkdir(wtPath, { recursive: true });
+
+    await writeHookConfig(wtPath, "/path/to/assets", "/manifest.txt");
+
+    const configPath = resolve(wtPath, ".claude", "settings.local.json");
+    const content = JSON.parse(await Bun.file(configPath).text());
+    expect(content.hooks.PreToolUse).toHaveLength(1);
+    expect(content.hooks.PreToolUse[0].matcher).toBe("Edit|Write|NotebookEdit");
+    expect(content.hooks.PreToolUse[0].hooks[0].command).toBe(
+      "bun /path/to/assets/hooks/fileset.ts",
+    );
+  });
+
+  test("hookExcludeEnv writes exclude file and returns env vars", async () => {
+    const runDirPath = resolve(root, "run");
+
+    const env = hookExcludeEnv(runDirPath);
+
+    const excludePath = resolve(runDirPath, "hooks", "exclude");
+    const content = await Bun.file(excludePath).text();
+    expect(content).toBe(".claude/settings.local.json\n");
+    expect(env.GIT_CONFIG_COUNT).toBe("1");
+    expect(env.GIT_CONFIG_KEY_0).toBe("core.excludesFile");
+    expect(env.GIT_CONFIG_VALUE_0).toBe(excludePath);
   });
 });
