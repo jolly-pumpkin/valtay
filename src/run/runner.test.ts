@@ -495,4 +495,45 @@ describe("runner", () => {
     expect(ru1!.fenceViolations).toContain("src/extra.ts");
     expect(ru1!.fenceViolations).not.toContain("src/foo.ts");
   });
+
+  test("conflict path returns failed and dispatches nothing", async () => {
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+    let buildDispatched = false;
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      // Two units, no deps → same wave. Both declare src/shared.ts → shared-file conflict.
+      await Bun.write(
+        resolve(runDir, "plan.md"),
+        "# Plan\n\n## RU-1 — Unit A\n\n### L1 — add shared\n- **Files:** `src/shared.ts`\n\n## RU-2 — Unit B\n\n### L1 — also shared\n- **Files:** `src/shared.ts`\n",
+      );
+      await Bun.write(
+        resolve(runDir, "briefs", "RU-1.md"),
+        "# Brief\n\n## Layers\n\n### L1\n- **Files:** `src/shared.ts`\n\n## Dependencies\n\nNone\n",
+      );
+      await Bun.write(
+        resolve(runDir, "briefs", "RU-2.md"),
+        "# Brief\n\n## Layers\n\n### L1\n- **Files:** `src/shared.ts`\n\n## Dependencies\n\nNone\n",
+      );
+    });
+
+    // If any build subagent is dispatched, record it
+    actions.set("build subagent for unit RU-1", async () => { buildDispatched = true; });
+    actions.set("build subagent for unit RU-2", async () => { buildDispatched = true; });
+
+    const result = await run({
+      spec: spec(),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: fakeProviderFactory(actions),
+    });
+
+    expect(result.outcome).toBe("failed");
+    if (result.outcome === "failed") {
+      expect(result.phase).toBe("build");
+      expect(result.reason).toContain("src/shared.ts");
+    }
+    expect(buildDispatched).toBe(false);
+  });
 });

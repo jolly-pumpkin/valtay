@@ -24,6 +24,7 @@ import { advance } from "./orchestrator.ts";
 import { providerFor, dispatchNotes, type Provider, type DispatchResult } from "./provider.ts";
 import { parsePlanUnits, topoSortWaves, parseReport, type PlanUnit } from "./plan-parser.ts";
 import { buildPhasePrompt, buildSubagentPrompt, type PromptContext } from "./prompts.ts";
+import { importGraph, waveConflicts, formatConflicts } from "./fileset.ts";
 
 export interface VerifyFinding {
   what: string;
@@ -241,6 +242,18 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
       const ledger: BuildLedger = existingLedger ?? { units: [], updated: "" };
 
       for (const wave of waves) {
+        // Check for file-set conflicts before dispatching
+        const allWaveFiles = wave.units.flatMap((u) => u.files);
+        const graph = await importGraph(integrationWtPath, allWaveFiles);
+        const conflicts = waveConflicts(wave, graph);
+        if (conflicts.length > 0) {
+          const messages = formatConflicts(conflicts);
+          const reason = messages.join("\n");
+          await writeState(theRun, { ...state, status: "failed", note: reason });
+          await cleanupWorktrees(repoRoot, unitWorktreePaths, runName, units);
+          return { outcome: "failed", phase: "build", reason };
+        }
+
         // Create worktrees serially from integration branch (avoid git lock contention)
         const worktrees: Array<{ unit: typeof wave.units[number]; branch: string; wtPath: string }> = [];
         for (const unit of wave.units) {
