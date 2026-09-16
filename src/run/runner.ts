@@ -27,6 +27,32 @@ import { parsePlanUnits, topoSortWaves, parseReport, type PlanUnit } from "./pla
 import { buildPhasePrompt, buildSubagentPrompt, type PromptContext } from "./prompts.ts";
 import { importGraph, waveConflicts, formatConflicts } from "./fileset.ts";
 
+/**
+ * Run a setup command in the given directory.
+ * Uses `sh -c` with a 10-minute timeout. Captures combined stdout+stderr,
+ * keeps only the last 200 lines.
+ */
+export async function runSetup(cwd: string, cmd: string): Promise<{ ok: boolean; output: string }> {
+  const proc = Bun.spawn(["sh", "-c", cmd], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const timeout = setTimeout(() => proc.kill(), 10 * 60 * 1000);
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+  clearTimeout(timeout);
+
+  const combined = (stdout + stderr).split("\n");
+  const output = combined.slice(-200).join("\n").trimEnd();
+
+  return { ok: exitCode === 0, output };
+}
+
 export interface VerifyFinding {
   what: string;
   actual: string;
@@ -327,9 +353,50 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
           unitWorktreePaths.push(wtPath);
         }
 
+        // Run setup command in each worktree if configured
+        const setupBlockedUnits = new Set<string>();
+        if (config.setup) {
+          for (const { unit, wtPath } of worktrees) {
+            const setupStart = Date.now();
+            const setupResult = await runSetup(wtPath, config.setup);
+            const setupDuration = Date.now() - setupStart;
+            const exitCode = setupResult.ok ? 0 : 1;
+
+            await appendInvocation(theRun, {
+              ts: new Date().toISOString(),
+              phase: "build",
+              unit: unit.id,
+              attempt: 1,
+              host: "local",
+              model: "sh",
+              prompt_sha: sha256(config.setup),
+              exit_code: exitCode,
+              duration_ms: setupDuration,
+              notes: [`setup: ${config.setup} exit ${exitCode} ${(setupDuration / 1000).toFixed(1)}s`],
+            });
+
+            if (!setupResult.ok) {
+              setupBlockedUnits.add(unit.id);
+            }
+          }
+        }
+
         // Dispatch in parallel
         const waveResults = await Promise.all(
           worktrees.map(async ({ unit, branch, wtPath }) => {
+            // If setup failed for this unit, block all layers and skip dispatch
+            if (setupBlockedUnits.has(unit.id)) {
+              const reportContent = await readArtifact(theRun, `reports/${unit.id}.md`);
+              const layers: LayerReport[] = reportContent
+                ? parseReport(unit.id, reportContent).map((l) => ({
+                    ...l,
+                    status: "blocked" as const,
+                    reason: `setup failed: ${config.setup}`,
+                  }))
+                : [{ unit: unit.id, layer: "L1", status: "blocked" as const, reason: `setup failed: ${config.setup}` }];
+              return { unit: unit.id, layers, branch, files: unit.files };
+            }
+
             const prompt = await buildSubagentPrompt(unit.id, ctx);
             const reportPath = resolve(theRun.dir, `reports/${unit.id}.md`);
             const filesetPath = await writeFilesetManifest(theRun.dir, unit.id, unit.files, reportPath);
@@ -500,6 +567,27 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
     const verifyCwd = theRun.meta.integrationBranch
       ? worktreePath(runName, "integration")
       : repoRoot;
+
+    // Run setup in integration worktree before checkpoints
+    if (config.setup) {
+      const setupStart = Date.now();
+      const setupResult = await runSetup(verifyCwd, config.setup);
+      const setupDuration = Date.now() - setupStart;
+      const exitCode = setupResult.ok ? 0 : 1;
+
+      await appendInvocation(theRun, {
+        ts: new Date().toISOString(),
+        phase: "build",
+        unit: "integration",
+        attempt: 1,
+        host: "local",
+        model: "sh",
+        prompt_sha: sha256(config.setup),
+        exit_code: exitCode,
+        duration_ms: setupDuration,
+        notes: [`setup: ${config.setup} exit ${exitCode} ${(setupDuration / 1000).toFixed(1)}s`],
+      });
+    }
 
     // Run checkpoints before verify dispatch
     const units = await parsePlanUnits(theRun);

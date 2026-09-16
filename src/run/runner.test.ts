@@ -536,6 +536,133 @@ describe("runner", () => {
     }
     expect(buildDispatched).toBe(false);
   });
+
+  test("setup failure blocks the unit and dispatches nothing", async () => {
+    const SPEC_WITH_SETUP = `---
+run: test-run
+host: claude
+model: sonnet
+setup: "exit 1"
+---
+
+# Test
+
+## Design
+
+interface Foo { bar: string }
+`;
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+    let buildDispatched = false;
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      await Bun.write(
+        resolve(runDir, "plan.md"),
+        "# Plan\n\n## RU-1 — Test\n\n### L1 — do stuff\n- **Files:** `src/foo.ts`\n",
+      );
+      await Bun.write(
+        resolve(runDir, "briefs", "RU-1.md"),
+        "# Brief\n\n## Layers\n\n### L1\n- **Files:** `src/foo.ts`\n\n## Dependencies\n\nNone\n",
+      );
+    });
+
+    actions.set("build subagent for unit RU-1", async () => { buildDispatched = true; });
+
+    const result = await run({
+      spec: parseRunspec(SPEC_WITH_SETUP, resolve(root, "runspec.md")),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: fakeProviderFactory(actions),
+    });
+
+    expect(buildDispatched).toBe(false);
+
+    // The unit should be blocked
+    const { loadRun } = await import("./store.ts");
+    const theRun = await loadRun(resolve(repo, ".valtay", "runs", "test-run"));
+    const ledger = await readLedger(theRun);
+    expect(ledger).not.toBeNull();
+    const ru1 = ledger!.units.find((u) => u.unit === "RU-1");
+    expect(ru1).toBeDefined();
+    expect(ru1!.layers.every((l) => l.status === "blocked")).toBe(true);
+    expect(ru1!.layers[0]!.reason).toContain("setup failed");
+
+    // Setup invocation should be recorded
+    const invocations = await readInvocations(theRun);
+    const setupInv = invocations.find((i) => i.host === "local" && i.model === "sh");
+    expect(setupInv).toBeDefined();
+    expect(setupInv!.exit_code).not.toBe(0);
+    expect(setupInv!.notes[0]).toContain("setup:");
+  });
+
+  test("setup success is recorded in invocations", async () => {
+    const SPEC_WITH_SETUP = `---
+run: test-run
+host: claude
+model: sonnet
+setup: "echo setup-ok"
+---
+
+# Test
+
+## Design
+
+interface Foo { bar: string }
+`;
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      await Bun.write(
+        resolve(runDir, "plan.md"),
+        "# Plan\n\n## RU-1 — Test\n\n### L1 — do stuff\n- **Files:** `src/foo.ts`\n",
+      );
+      await Bun.write(
+        resolve(runDir, "briefs", "RU-1.md"),
+        "# Brief\n\n## Layers\n\n### L1\n- **Files:** `src/foo.ts`\n\n## Dependencies\n\nNone\n",
+      );
+    });
+
+    actions.set("build subagent for unit RU-1", async (opts) => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(opts.cwd, "src"), { recursive: true });
+      await Bun.write(resolve(opts.cwd, "src", "foo.ts"), "export const foo = 1;\n");
+      const addProc = Bun.spawn(["git", "add", "-A"], { cwd: opts.cwd, stdout: "ignore", stderr: "ignore" });
+      await addProc.exited;
+      const commitProc = Bun.spawn(["git", "commit", "-m", "build"], {
+        cwd: opts.cwd, stdout: "ignore", stderr: "ignore",
+        env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "t@t" },
+      });
+      await commitProc.exited;
+      await Bun.write(resolve(runDir, "reports", "RU-1.md"), "# Report: RU-1\n\n## L1\n- **Status:** done\n- **Files touched:** `src/foo.ts`\n");
+    });
+
+    actions.set('phase "verify"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await Bun.write(resolve(runDir, "verify.json"), JSON.stringify({ status: "clean", findings: [] }));
+    });
+
+    const result = await run({
+      spec: parseRunspec(SPEC_WITH_SETUP, resolve(root, "runspec.md")),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: fakeProviderFactory(actions),
+    });
+
+    expect(result.outcome).toBe("complete");
+
+    const { loadRun } = await import("./store.ts");
+    const theRun = await loadRun(resolve(repo, ".valtay", "runs", "test-run"));
+    const invocations = await readInvocations(theRun);
+
+    // Should have setup invocations (unit + integration) plus plan, build, verify
+    const setupInvocations = invocations.filter((i) => i.host === "local" && i.model === "sh");
+    expect(setupInvocations.length).toBeGreaterThanOrEqual(1);
+    expect(setupInvocations[0]!.exit_code).toBe(0);
+    expect(setupInvocations[0]!.notes[0]).toContain("setup: echo setup-ok");
+  });
 });
 
 describe("fileset helpers", () => {
