@@ -446,6 +446,28 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
               notes: dispatchNotes(result),
             });
 
+            // Count hook denials for this unit
+            const denialsPath = resolve(theRun.dir, "hooks", "denials.log");
+            if (await Bun.file(denialsPath).exists()) {
+              const denialsContent = await Bun.file(denialsPath).text();
+              const unitDenials = denialsContent.split("\n")
+                .filter((l) => l.includes(`\t${unit.id}\t`)).length;
+              if (unitDenials > 0) {
+                await appendInvocation(theRun, {
+                  ts: new Date().toISOString(),
+                  phase: "build",
+                  unit: unit.id,
+                  attempt: 1,
+                  host: "runner",
+                  model: "denial-count",
+                  prompt_sha: "",
+                  exit_code: 0,
+                  duration_ms: 0,
+                  notes: [`hook denials: ${unitDenials}`],
+                });
+              }
+            }
+
             const reportContent = await readArtifact(theRun, `reports/${unit.id}.md`);
             const layers: LayerReport[] = reportContent
               ? parseReport(unit.id, reportContent)
@@ -515,6 +537,24 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
               entry.fenceViolations = [...(entry.fenceViolations ?? []), diff];
             }
           }
+
+          const preLines = (preWaveStatus.stdout ?? "").split("\n").filter(Boolean);
+          const postLines = (postWaveStatus.stdout ?? "").split("\n").filter(Boolean);
+          const integrityDiff = postLines.filter((l) => !preLines.includes(l)).slice(0, 5);
+          const notes = [`checkout changed during wave ${waveIdx}: ${integrityDiff.join(", ")}`];
+
+          await appendInvocation(theRun, {
+            ts: new Date().toISOString(),
+            phase: "build",
+            unit: `wave-${waveIdx}`,
+            attempt: 1,
+            host: "runner",
+            model: "integrity-check",
+            prompt_sha: "",
+            exit_code: 0,
+            duration_ms: 0,
+            notes,
+          });
         }
 
         await writeLedger(theRun, ledger);
@@ -568,7 +608,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
 
   // ── Verify ──────────────────────────────────────────────
   state = await readState(theRun);
-  if (state.phase === "verify" && state.status !== "complete") {
+  if (state.phase === "verify" && state.status === "pending") {
     if (state.rerun) {
       await writeState(theRun, { ...state, rerun: undefined });
     }
@@ -653,19 +693,31 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
   }
 
   if (state.status === "complete") {
+    const rejPath = resolve(theRun.dir, "rejection.md");
+    if (await Bun.file(rejPath).exists()) {
+      const { unlink } = await import("node:fs/promises");
+      await unlink(rejPath);
+    }
     return { outcome: "complete" };
   }
 
-  if (state.status === "awaiting_gate") {
+  if (state.phase === "verify" && state.status === "awaiting_gate") {
     const raw = await readArtifact(theRun, "verify.json");
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as { findings?: VerifyFinding[] };
-        return { outcome: "drift", findings: parsed.findings ?? [] };
+        const findings = parsed.findings ?? [];
+        console.log(`verify parked — ${findings.length} finding(s). Use valtay approve/reject to continue.`);
+        return { outcome: "drift", findings };
       } catch {
         return { outcome: "failed", phase: "verify", reason: "verify.json is not valid JSON" };
       }
     }
+  }
+
+  if (state.phase === "verify" && state.status === "failed") {
+    console.log(`verify failed. Use valtay reject to re-enter.`);
+    return { outcome: "failed", phase: "verify", reason: "verify previously failed" };
   }
 
   return { outcome: "failed", phase: "verify", reason: `Unexpected state after verify: ${state.phase}/${state.status}` };

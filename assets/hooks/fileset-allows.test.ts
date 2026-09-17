@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { filesetAllows } from "./fileset-allows.ts";
@@ -68,5 +68,47 @@ describe("filesetAllows", () => {
     expect(await filesetAllows(manifest, "/repo/src/a.ts", "/repo")).toBe(true);
     expect(await filesetAllows(manifest, "/run/reports/RU-1.md", "/repo")).toBe(true);
     expect(await filesetAllows(manifest, "/repo/src/b.ts", "/repo")).toBe(false);
+  });
+});
+
+describe("fileset hook denial logging", () => {
+  test("deny appends a line to denials.log", async () => {
+    // Set up a run-dir-like structure: <tmp>/filesets/RU-1.txt and <tmp>/hooks/
+    const filesetsDir = join(tmp, "filesets");
+    const hooksDir = join(tmp, "hooks");
+    await mkdir(filesetsDir, { recursive: true });
+    await mkdir(hooksDir, { recursive: true });
+
+    const filesetPath = join(filesetsDir, "RU-1.txt");
+    await Bun.write(filesetPath, "src/allowed.ts\n");
+
+    const hookScript = resolve(import.meta.dir, "fileset.ts");
+    const event = JSON.stringify({
+      tool_input: { file_path: "/repo/src/denied.ts" },
+    });
+
+    const proc = Bun.spawn(["bun", hookScript], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        VALTAY_FILESET: filesetPath,
+        CLAUDE_PROJECT_DIR: "/repo",
+      },
+    });
+    proc.stdin.write(event);
+    proc.stdin.end();
+    await proc.exited;
+
+    const denialsPath = join(hooksDir, "denials.log");
+    const exists = await Bun.file(denialsPath).exists();
+    expect(exists).toBe(true);
+
+    const content = await Bun.file(denialsPath).text();
+    const lines = content.split("\n").filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("RU-1");
+    expect(lines[0]).toContain("/repo/src/denied.ts");
   });
 });

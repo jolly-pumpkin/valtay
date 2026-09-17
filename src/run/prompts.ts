@@ -78,12 +78,19 @@ ${body}`;
 export async function buildSubagentPrompt(unitId: string, ctx: PromptContext): Promise<string> {
   const body = await loadTemplate("phases/build/SUBAGENT.md");
 
-  return `You are a build subagent for unit ${unitId} in Valtay run "${ctx.runName}".
+  const rejectionPath = resolve(ctx.runDir, "rejection.md");
+  const hasRejection = await Bun.file(rejectionPath).exists();
 
-Run directory: ${ctx.runDir}
-Repo root: ${ctx.repoRoot}
-Runspec: ${ctx.runspecPath}
-Brief: ${ctx.runDir}/briefs/${unitId}.md
+  const header = [
+    `You are a build subagent for unit ${unitId} in Valtay run "${ctx.runName}".`,
+    "",
+    `Run directory: ${ctx.runDir}`,
+    `Runspec: ${ctx.runspecPath}`,
+    `Brief: ${ctx.runDir}/briefs/${unitId}.md`,
+  ];
+  if (hasRejection) header.push(`Rejection: ${rejectionPath}`);
+
+  return `${header.join("\n")}
 
 Read your brief and the runspec's ## Design section, then follow the instructions below.
 

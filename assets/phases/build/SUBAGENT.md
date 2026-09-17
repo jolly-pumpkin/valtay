@@ -71,5 +71,10 @@ Write a report to `reports/<unit>.md` in the run directory. Use this format:
    your report and mark the layer `blocked`.
 7. **Never spawn child agents.** You are a leaf. If the work is too large,
    report it as `blocked`.
-8. **Commit all work.** Stage and commit your changes to the worktree branch
-   before finishing. The runner merges your branch.
+8. **Stay in your worktree.** Your worktree is the only checkout you may
+   touch. Never run git, or read or write files, in any other checkout of this
+   repository, including the one the run directory lives in. Reading the run
+   directory itself is fine.
+9. **Commit all work.** Stage your changes with `git add <the files you
+   changed>`, not `git add -A`. Commit to the worktree branch before
+   finishing. The runner merges your branch.
