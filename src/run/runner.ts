@@ -354,7 +354,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
         }
 
         // Run setup command in each worktree if configured
-        const setupBlockedUnits = new Set<string>();
+        const setupBlockedUnits = new Map<string, string>();
         if (config.setup) {
           for (const { unit, wtPath } of worktrees) {
             const setupStart = Date.now();
@@ -376,7 +376,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
             });
 
             if (!setupResult.ok) {
-              setupBlockedUnits.add(unit.id);
+              setupBlockedUnits.set(unit.id, setupResult.output);
             }
           }
         }
@@ -386,14 +386,15 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
           worktrees.map(async ({ unit, branch, wtPath }) => {
             // If setup failed for this unit, block all layers and skip dispatch
             if (setupBlockedUnits.has(unit.id)) {
+              const tail = setupBlockedUnits.get(unit.id)!;
               const reportContent = await readArtifact(theRun, `reports/${unit.id}.md`);
               const layers: LayerReport[] = reportContent
                 ? parseReport(unit.id, reportContent).map((l) => ({
                     ...l,
                     status: "blocked" as const,
-                    reason: `setup failed: ${config.setup}`,
+                    reason: `setup failed: ${tail}`,
                   }))
-                : [{ unit: unit.id, layer: "L1", status: "blocked" as const, reason: `setup failed: ${config.setup}` }];
+                : [{ unit: unit.id, layer: "L1", status: "blocked" as const, reason: `setup failed: ${tail}` }];
               return { unit: unit.id, layers, branch, files: unit.files };
             }
 
