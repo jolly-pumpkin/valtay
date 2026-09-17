@@ -87,12 +87,17 @@ export function buildClaudeArgs(opts: DispatchOpts): string[] {
 
   if (opts.write) {
     args.push("--permission-mode", "acceptEdits");
+    // A phase is one process (invariant 3). Subagents are removed outright rather
+    // than left to a prompt rule: "never spawn" is SUBAGENT.md rule 7 and the plan
+    // phase spawned an Explore agent in run subagent-scope regardless.
+    args.push("--disallowed-tools", "Agent");
     args.push("--allowed-tools", "Bash", "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep");
   } else {
     // Verify runs with cwd in the integration worktree; the run dir lives in the
     // main repo, so it has to be added explicitly for the CLI to touch it at all.
     if (opts.artifactDir) args.push("--add-dir", opts.artifactDir);
     args.push("--permission-mode", "dontAsk");
+    args.push("--disallowed-tools", "Agent");
     args.push("--allowed-tools", ...readOnlyRules(opts.artifactDir));
   }
 

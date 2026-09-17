@@ -4,9 +4,7 @@ import { relative } from "path";
  * Arg summary for a tool_use block. Returns the file path, command, or pattern
  * depending on the tool name, or an empty string for unknown tools.
  */
-function argSummary(name: string, input: Record<string, unknown>): string {
-  const cwd = process.cwd();
-
+function argSummary(name: string, input: Record<string, unknown>, cwd: string): string {
   const relativize = (p: string): string =>
     typeof p === "string" && p.startsWith(cwd) ? relative(cwd, p) : p;
 
@@ -33,8 +31,12 @@ function argSummary(name: string, input: Record<string, unknown>): string {
 /**
  * Format a single stream-json line into a terminal-friendly string.
  * Returns null for non-tool-use events.
+ *
+ * `cwd` is the directory the phase ran in — a worktree for build, the repo or
+ * integration worktree otherwise. Paths under it print relative; anything else
+ * prints absolute, so a builder reading outside its worktree is visible as such.
  */
-export function formatEvent(line: string, label: string): string | null {
+export function formatEvent(line: string, label: string, cwd: string = process.cwd()): string | null {
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(line);
@@ -55,7 +57,7 @@ export function formatEvent(line: string, label: string): string | null {
     if (block.type !== "tool_use") continue;
     const name = block.name as string;
     const input = (block.input as Record<string, unknown>) ?? {};
-    const summary = argSummary(name, input);
+    const summary = argSummary(name, input, cwd);
     const suffix = summary ? ` ${summary}` : "";
     lines.push(`  [${label}] ${name}${suffix}`);
   }

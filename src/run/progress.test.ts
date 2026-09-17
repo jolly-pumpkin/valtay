@@ -93,3 +93,13 @@ describe("formatEvent", () => {
     expect(formatEvent(line, "plan")).toBe("  [plan] Agent");
   });
 });
+
+describe("formatEvent cwd", () => {
+  test("relativizes against the given cwd, not the runner's", () => {
+    const line = JSON.stringify({ type: "assistant", message: { content: [
+      { type: "tool_use", name: "Read", input: { file_path: "/wt/RU-1/src/a.ts" } },
+      { type: "tool_use", name: "Read", input: { file_path: "/repo/main/src/a.ts" } },
+    ] } });
+    expect(formatEvent(line, "RU-1", "/wt/RU-1")).toBe("  [RU-1] Read src/a.ts\n  [RU-1] Read /repo/main/src/a.ts");
+  });
+});

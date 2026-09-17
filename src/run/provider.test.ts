@@ -24,11 +24,12 @@ describe("providerFor", () => {
 });
 
 describe("buildClaudeArgs", () => {
-  test("read-only phase uses dontAsk with a read-only allow list, never disallowed-tools", () => {
+  test("read-only phase uses dontAsk with a read-only allow list; only Agent is disallowed", () => {
     const args = buildClaudeArgs(readOpts);
     expect(args).toContain("--permission-mode");
     expect(args[args.indexOf("--permission-mode") + 1]).toBe("dontAsk");
-    expect(args).not.toContain("--disallowed-tools");
+    expect(args[args.indexOf("--disallowed-tools") + 1]).toBe("Agent");
+    expect(args[args.indexOf("--disallowed-tools") + 2]).toBe("--allowed-tools"); // nothing else removed
     const allowed = args.slice(args.indexOf("--allowed-tools") + 1); // variadic, last in argv
     expect(allowed).toContain("Read");
     expect(allowed).toContain("Bash(git diff *)");
@@ -56,7 +57,7 @@ describe("buildClaudeArgs", () => {
     const args = buildClaudeArgs(writeOpts);
     expect(args[args.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
     expect(args).toContain("--allowed-tools");
-    expect(args).not.toContain("--disallowed-tools");
+    expect(args[args.indexOf("--disallowed-tools") + 1]).toBe("Agent"); // no subagents in a build either
     expect(args.slice(args.indexOf("--allowed-tools") + 1)).toEqual(
       ["Bash", "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep"],
     );

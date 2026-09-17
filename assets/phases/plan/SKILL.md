@@ -94,7 +94,10 @@ this unit's layers.
 ## Rules
 
 1. **`checkpoint` is the project's own test script** — for a `package.json`
-   repo, `bun run test` (or the `test` script's package-manager equivalent).
+   repo, the `scripts.test` entry, invoked as `bun run test` (or the
+   package-manager equivalent). `bun test` alone is **not** it: that skips
+   whatever the script adds, such as `tsc --noEmit`. The runner substitutes the
+   real script if you choose anything else and records that it did.
    Never prefix it with an install step; the runner runs setup. `valtay init`
    writes `setup = "bun install --frozen-lockfile"` into `valtay.toml` when it
    detects `package.json`, and leaves it absent otherwise. The

@@ -960,3 +960,35 @@ describe("fileset helpers", () => {
     expect(env.GIT_CONFIG_VALUE_0).toBe(excludePath);
   });
 });
+
+describe("resolveCheckpoint", () => {
+  const { resolveCheckpoint } = require("./runner.ts") as typeof import("./runner.ts");
+  const { mkdtemp, rm, writeFile } = require("node:fs/promises") as typeof import("node:fs/promises");
+  const { tmpdir } = require("node:os") as typeof import("node:os");
+  const { resolve } = require("node:path") as typeof import("node:path");
+
+  test("keeps the planned command when there is no package.json", async () => {
+    const dir = await mkdtemp(resolve(tmpdir(), "vt-cp-"));
+    expect(await resolveCheckpoint(dir, "make test")).toEqual({ command: "make test" });
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("substitutes the test script when the plan chose bun test, and says so", async () => {
+    const dir = await mkdtemp(resolve(tmpdir(), "vt-cp-"));
+    await writeFile(resolve(dir, "package.json"), JSON.stringify({ scripts: { test: "tsc --noEmit && bun test" } }));
+    await writeFile(resolve(dir, "bun.lock"), "");
+    const r = await resolveCheckpoint(dir, "bun test");
+    expect(r.command).toBe("bun run test");
+    expect(r.note).toMatch(/overridden/);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("keeps a planned command that already runs the script", async () => {
+    const dir = await mkdtemp(resolve(tmpdir(), "vt-cp-"));
+    await writeFile(resolve(dir, "package.json"), JSON.stringify({ scripts: { test: "x" } }));
+    await writeFile(resolve(dir, "pnpm-lock.yaml"), "");
+    expect(await resolveCheckpoint(dir, "bun install && bun run test")).toEqual({ command: "bun install && bun run test" });
+    expect((await resolveCheckpoint(dir, "bun test")).command).toBe("pnpm test");
+    await rm(dir, { recursive: true, force: true });
+  });
+});

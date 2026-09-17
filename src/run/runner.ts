@@ -81,6 +81,35 @@ export interface RunnerOpts {
  * to the run directory. Returns the path to checkpoint.md if any checkpoints
  * were run, undefined otherwise.
  */
+/**
+ * The checkpoint a project actually has. When package.json declares a `test`
+ * script, that script — invoked through the detected package manager — is the
+ * checkpoint, whatever the plan said. Three runs in a row the planner chose
+ * `bun test`, which skips the script's `tsc --noEmit`, and verify read a green
+ * checkpoint over a branch that did not compile. Advisory rules in the plan skill
+ * did not fix it; this does. Repos without a `test` script keep the planned command.
+ */
+export async function resolveCheckpoint(
+  cwd: string,
+  planned: string,
+): Promise<{ command: string; note?: string }> {
+  const pkgFile = Bun.file(resolve(cwd, "package.json"));
+  if (!(await pkgFile.exists())) return { command: planned };
+  let pkg: { scripts?: Record<string, string> };
+  try { pkg = JSON.parse(await pkgFile.text()); } catch { return { command: planned }; }
+  if (!pkg.scripts?.["test"]) return { command: planned };
+
+  const pm = (await pathExists(resolve(cwd, "bun.lock"))) || (await pathExists(resolve(cwd, "bun.lockb")))
+    ? "bun run test"
+    : (await pathExists(resolve(cwd, "pnpm-lock.yaml"))) ? "pnpm test"
+    : (await pathExists(resolve(cwd, "yarn.lock"))) ? "yarn test"
+    : "npm test";
+
+  const invokesScript = /\b(run test|npm test|pnpm test|yarn test)\b/.test(planned);
+  if (invokesScript) return { command: planned };
+  return { command: pm, note: `checkpoint overridden: plan said \`${planned}\`; package.json's test script is the checkpoint` };
+}
+
 async function runCheckpoints(
   units: PlanUnit[],
   cwd: string,
@@ -92,8 +121,10 @@ async function runCheckpoints(
   const sections: string[] = [];
 
   for (const unit of unitsWithCheckpoints) {
+    const { command, note } = await resolveCheckpoint(cwd, unit.checkpoint!);
+    if (note) console.log(`  [checkpoint] ${unit.id}: ${note}`);
     const start = Date.now();
-    const proc = Bun.spawn(["sh", "-c", unit.checkpoint!], {
+    const proc = Bun.spawn(["sh", "-c", command], {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
@@ -111,7 +142,8 @@ async function runCheckpoints(
     const combined = (stdout + stderr).split("\n");
     const last200 = combined.slice(-200).join("\n").trimEnd();
 
-    sections.push(`## ${unit.id} — \`${unit.checkpoint}\` — exit ${exitCode} — ${elapsed}s\n\`\`\`\n${last200}\n\`\`\``);
+    const header = note ? `## ${unit.id} — \`${command}\` — exit ${exitCode} — ${elapsed}s\n_${note}_` : `## ${unit.id} — \`${command}\` — exit ${exitCode} — ${elapsed}s`;
+    sections.push(`${header}\n\`\`\`\n${last200}\n\`\`\``);
   }
 
   const checkpointPath = resolve(runDirPath, "checkpoint.md");
@@ -239,7 +271,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
       artifactDir: theRun.dir,
       logPath: resolve(logsDir, "plan.jsonl"),
       onEvent: (line) => {
-        const formatted = formatEvent(line, "plan");
+        const formatted = formatEvent(line, "plan", repoRoot);
         if (formatted) console.log(formatted);
       },
     });
@@ -426,7 +458,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
               },
               logPath: resolve(logsDir, `build-${unit.id}.jsonl`),
               onEvent: (line) => {
-                const formatted = formatEvent(line, unit.id);
+                const formatted = formatEvent(line, unit.id, wtPath);
                 if (formatted) console.log(formatted);
               },
             });
@@ -665,7 +697,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
       artifactDir: theRun.dir,
       logPath: resolve(logsDir, "verify.jsonl"),
       onEvent: (line) => {
-        const formatted = formatEvent(line, "verify");
+        const formatted = formatEvent(line, "verify", verifyCwd);
         if (formatted) console.log(formatted);
       },
     });

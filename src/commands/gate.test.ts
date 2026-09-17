@@ -228,12 +228,13 @@ describe("reject", () => {
       reason: "start over",
     });
 
-    // --to plan doesn't trigger the build reset path, so ledger stays as-is
-    // (the design says "if --to plan, all units are implicated" but that's only
-    // within the target.id === "build" guard — plan re-enters at plan phase)
-    const state = await readState(await findRun(repo));
+    // --to plan implicates every unit: the plan that produced them is about to change
+    const after = await findRun(repo);
+    const state = await readState(after);
     expect(state.phase).toBe("plan");
     expect(state.status).toBe("pending");
+    const reset = await readLedger(after);
+    expect(reset!.units[0]!.layers[0]!.status).toBe("pending");
   });
 });
 

@@ -103,7 +103,9 @@ export async function runReject(options: RejectOptions): Promise<string[]> {
     note: `verify rejected to ${target.title}`,
   });
 
-  if (target.id === "build") {
+  // Re-entering at build resets the implicated units; re-entering at plan
+  // resets every unit, since the plan that produced them is about to change.
+  if (target.id === "build" || target.id === "plan") {
     const ledger = await readLedger(run);
     if (ledger) {
       const units = await parsePlanUnits(run);
@@ -113,9 +115,9 @@ export async function runReject(options: RejectOptions): Promise<string[]> {
         : [];
 
       const findingFiles = new Set(findings.map((f) => f.file).filter(Boolean));
-      const implicated = findingFiles.size > 0
+      const implicated = target.id === "build" && findingFiles.size > 0
         ? units.filter((u) => u.files.some((f) => findingFiles.has(f)))
-        : units;  // all units if no finding names a file
+        : units;  // all units: --to plan, or no finding names a file
 
       const implicatedIds = new Set(implicated.map((u) => u.id));
       for (const entry of ledger.units) {

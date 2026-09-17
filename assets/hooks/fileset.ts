@@ -21,7 +21,10 @@ if (!(await filesetAllows(manifest, filePath, process.env.CLAUDE_PROJECT_DIR))) 
   const denialsPath = `${filesetDir}/hooks/denials.log`;
   const unitId = manifest.match(/\/filesets\/([^/]+)\.txt$/)?.[1] ?? "unknown";
   const line = `${new Date().toISOString()}\t${unitId}\t${filePath}\n`;
-  await Bun.write(denialsPath, line, { append: true });
+  // Bun.write has no append option; use the node fs API, which the type checker accepts.
+  const { appendFile, mkdir } = await import("node:fs/promises");
+  await mkdir(`${filesetDir}/hooks`, { recursive: true });
+  await appendFile(denialsPath, line);
 
   console.error(
     `file outside declared set: ${filePath} — report the layer blocked instead of writing around the fence`
