@@ -100,7 +100,8 @@ describe("buildSubagentPrompt", () => {
     expect(prompt).toContain("unit RU-1");
     expect(prompt).toContain('Valtay run "test-run"');
     expect(prompt).toContain("Run directory: /fake/repo/.valtay/runs/test-run");
-    expect(prompt).toContain("Repo root: /fake/repo");
+    expect(prompt).not.toContain("Repo root:");
+    expect(prompt).toContain("Runspec: /fake/repo/.valtay/runs/test-run/runspec.md");
     expect(prompt).toContain("Brief: /fake/repo/.valtay/runs/test-run/briefs/RU-1.md");
     expect(prompt).toContain("Read your brief and the runspec's ## Design section");
     expect(prompt).toContain("# Role: build subagent");

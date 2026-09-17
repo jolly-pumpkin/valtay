@@ -515,6 +515,24 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
               entry.fenceViolations = [...(entry.fenceViolations ?? []), diff];
             }
           }
+
+          const preLines = (preWaveStatus.stdout ?? "").split("\n").filter(Boolean);
+          const postLines = (postWaveStatus.stdout ?? "").split("\n").filter(Boolean);
+          const integrityDiff = postLines.filter((l) => !preLines.includes(l)).slice(0, 5);
+          const notes = [`checkout changed during wave ${waveIdx}: ${integrityDiff.join(", ")}`];
+
+          await appendInvocation(theRun, {
+            ts: new Date().toISOString(),
+            phase: "build",
+            unit: `wave-${waveIdx}`,
+            attempt: 1,
+            host: "runner",
+            model: "integrity-check",
+            prompt_sha: "",
+            exit_code: 0,
+            duration_ms: 0,
+            notes,
+          });
         }
 
         await writeLedger(theRun, ledger);

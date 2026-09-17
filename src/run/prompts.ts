@@ -81,7 +81,6 @@ export async function buildSubagentPrompt(unitId: string, ctx: PromptContext): P
   return `You are a build subagent for unit ${unitId} in Valtay run "${ctx.runName}".
 
 Run directory: ${ctx.runDir}
-Repo root: ${ctx.repoRoot}
 Runspec: ${ctx.runspecPath}
 Brief: ${ctx.runDir}/briefs/${unitId}.md
 
