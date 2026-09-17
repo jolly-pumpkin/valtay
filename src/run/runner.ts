@@ -586,7 +586,7 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
 
   // ── Verify ──────────────────────────────────────────────
   state = await readState(theRun);
-  if (state.phase === "verify" && state.status !== "complete") {
+  if (state.phase === "verify" && state.status === "pending") {
     if (state.rerun) {
       await writeState(theRun, { ...state, rerun: undefined });
     }
@@ -671,19 +671,31 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
   }
 
   if (state.status === "complete") {
+    const rejPath = resolve(theRun.dir, "rejection.md");
+    if (await Bun.file(rejPath).exists()) {
+      const { unlink } = await import("node:fs/promises");
+      await unlink(rejPath);
+    }
     return { outcome: "complete" };
   }
 
-  if (state.status === "awaiting_gate") {
+  if (state.phase === "verify" && state.status === "awaiting_gate") {
     const raw = await readArtifact(theRun, "verify.json");
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as { findings?: VerifyFinding[] };
-        return { outcome: "drift", findings: parsed.findings ?? [] };
+        const findings = parsed.findings ?? [];
+        console.log(`verify parked — ${findings.length} finding(s). Use valtay approve/reject to continue.`);
+        return { outcome: "drift", findings };
       } catch {
         return { outcome: "failed", phase: "verify", reason: "verify.json is not valid JSON" };
       }
     }
+  }
+
+  if (state.phase === "verify" && state.status === "failed") {
+    console.log(`verify failed. Use valtay reject to re-enter.`);
+    return { outcome: "failed", phase: "verify", reason: "verify previously failed" };
   }
 
   return { outcome: "failed", phase: "verify", reason: `Unexpected state after verify: ${state.phase}/${state.status}` };

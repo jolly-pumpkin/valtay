@@ -1,4 +1,7 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve, join } from "node:path";
 import {
   stripFrontmatter,
   loadTemplate,
@@ -105,5 +108,27 @@ describe("buildSubagentPrompt", () => {
     expect(prompt).toContain("Brief: /fake/repo/.valtay/runs/test-run/briefs/RU-1.md");
     expect(prompt).toContain("Read your brief and the runspec's ## Design section");
     expect(prompt).toContain("# Role: build subagent");
+  });
+
+  test("includes Rejection: line when rejection.md exists", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "valtay-prompt-"));
+    try {
+      await Bun.write(resolve(tmpDir, "rejection.md"), "# Rejection\n\ntest reason\n");
+      const ctx: PromptContext = {
+        ...CTX,
+        runDir: tmpDir,
+        runspecPath: resolve(tmpDir, "runspec.md"),
+      };
+      const prompt = await buildSubagentPrompt("RU-1", ctx);
+      expect(prompt).toContain("Rejection:");
+      expect(prompt).toContain("rejection.md");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("omits Rejection: line when rejection.md does not exist", async () => {
+    const prompt = await buildSubagentPrompt("RU-1", CTX);
+    expect(prompt).not.toContain("Rejection:");
   });
 });

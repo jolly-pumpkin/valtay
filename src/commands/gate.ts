@@ -4,12 +4,16 @@ import {
   appendApproval,
   appendContestation,
   hashArtifact,
+  readArtifact,
   readLedger,
   readState,
+  writeArtifact,
   writeLedger,
   writeState,
   type GateId,
 } from "../run/store.ts";
+import { parsePlanUnits } from "../run/plan-parser.ts";
+import type { VerifyFinding } from "../run/runner.ts";
 import { selectRun, type RunSelector } from "./status.ts";
 
 export interface GateOptions extends RunSelector {
@@ -98,6 +102,40 @@ export async function runReject(options: RejectOptions): Promise<string[]> {
     completed: state.completed.filter((id) => !reentered.includes(id)),
     note: `verify rejected to ${target.title}`,
   });
+
+  if (target.id === "build") {
+    const ledger = await readLedger(run);
+    if (ledger) {
+      const units = await parsePlanUnits(run);
+      const raw = await readArtifact(run, "verify.json");
+      const findings: VerifyFinding[] = raw
+        ? (JSON.parse(raw).findings ?? [])
+        : [];
+
+      const findingFiles = new Set(findings.map((f) => f.file).filter(Boolean));
+      const implicated = findingFiles.size > 0
+        ? units.filter((u) => u.files.some((f) => findingFiles.has(f)))
+        : units;  // all units if no finding names a file
+
+      const implicatedIds = new Set(implicated.map((u) => u.id));
+      for (const entry of ledger.units) {
+        if (!implicatedIds.has(entry.unit)) continue;
+        entry.fenceViolations = [];
+        for (const layer of entry.layers) {
+          layer.status = "pending";
+          layer.reason = undefined;
+        }
+      }
+      await writeLedger(run, ledger);
+
+      // Write rejection.md
+      const rejLines = [`# Rejection\n`, options.reason, "", "## Findings", ""];
+      for (const f of findings) {
+        rejLines.push(`- \`${f.file}\`: ${f.what} → ${f.actual}`);
+      }
+      await writeArtifact(run, "rejection.md", rejLines.join("\n") + "\n");
+    }
+  }
 
   return [
     `verify rejected — re-entering at ${target.title}`,
