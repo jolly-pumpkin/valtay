@@ -1,6 +1,8 @@
 # valtay.toml - repo config. See docs/design.md section 20.
 # Precedence: runspec frontmatter -> ./valtay.toml -> ~/.valtay/config.toml -> built-in
 
+setup = "bun install --frozen-lockfile"
+
 [hosts.claude-code]
 bin = "claude"
 adapter = "claude-code"
