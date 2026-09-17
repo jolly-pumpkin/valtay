@@ -57,7 +57,7 @@ export async function appendDeviations(
       try {
         const parsed = JSON.parse(line) as Record<string, unknown>;
         if (VALID_KINDS.has(parsed.kind as string)) {
-          existing.add(dedupKey(parsed as DeviationEntry));
+          existing.add(dedupKey(parsed as unknown as DeviationEntry));
         }
       } catch {
         // skip unparseable lines
@@ -96,7 +96,7 @@ export async function readDeviations(
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>;
       if (VALID_KINDS.has(parsed.kind as string)) {
-        entries.push(parsed as DeviationEntry);
+        entries.push(parsed as unknown as DeviationEntry);
       }
     } catch {
       // skip unparseable lines
