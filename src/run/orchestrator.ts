@@ -14,6 +14,7 @@ import {
   type LayerReport,
   type Run,
 } from "./store.ts";
+import { appendDeviations, type DeviationEntry, type DeviationKind } from "./ledger.ts";
 
 /**
  * Verify artifact schema: what the verify skill writes to `verify.json`.
@@ -97,6 +98,19 @@ export async function advance(run: Run): Promise<string[]> {
         });
         lines.push(`${def.output} is not valid JSON.`);
         return lines;
+      }
+
+      // Emit verify findings to project ledger
+      if (result.findings && result.findings.length > 0) {
+        const deviations: DeviationEntry[] = result.findings.map((f) => ({
+          ts: new Date().toISOString(),
+          run: run.meta.run,
+          kind: f.severity as DeviationKind,
+          file: f.file,
+          detail: `${f.what}: ${f.actual}`,
+          pattern: f.file ? `${f.severity}:${f.file}` : f.severity,
+        }));
+        await appendDeviations(run.meta.repo, deviations);
       }
 
       if (result.status === "clean") {

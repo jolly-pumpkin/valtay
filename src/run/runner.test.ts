@@ -6,6 +6,7 @@ import { parseRunspec } from "../runspec.ts";
 import { readState, readInvocations, readLedger, type Run } from "./store.ts";
 import { run, writeFilesetManifest, writeHookConfig, hookExcludeEnv, type RunResult } from "./runner.ts";
 import type { Provider, DispatchOpts, DispatchResult } from "./provider.ts";
+import { readDeviations } from "./ledger.ts";
 
 let root: string;
 let repo: string;
@@ -913,6 +914,176 @@ interface Foo { bar: string }
     expect(setupInvocations.length).toBeGreaterThanOrEqual(1);
     expect(setupInvocations[0]!.exit_code).toBe(0);
     expect(setupInvocations[0]!.notes[0]).toContain("setup: echo setup-ok");
+  });
+
+  test("contested layers produce a 'contested' deviation entry", async () => {
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      await Bun.write(resolve(runDir, "plan.md"), "# Plan\n\n## RU-1 — Test\n");
+      await Bun.write(resolve(runDir, "briefs", "RU-1.md"), "# Brief\n\n## Dependencies\n\nNone\n");
+    });
+
+    actions.set("build subagent for unit RU-1", async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await Bun.write(
+        resolve(runDir, "reports", "RU-1.md"),
+        "# Report: RU-1\n\n## L1 — test\n- **Status:** contested\n- **Reason:** This layer is unnecessary\n",
+      );
+    });
+
+    await run({
+      spec: spec(),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: fakeProviderFactory(actions),
+    });
+
+    const deviations = await readDeviations(repo);
+    const contested = deviations.filter((d) => d.kind === "contested");
+    expect(contested).toHaveLength(1);
+    expect(contested[0]!.unit).toBe("RU-1");
+    expect(contested[0]!.layer).toBe("L1");
+    expect(contested[0]!.detail).toBe("This layer is unnecessary");
+    expect(contested[0]!.pattern).toBe("contested");
+  });
+
+  test("blocked layers produce a 'blocked' deviation entry", async () => {
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      await Bun.write(resolve(runDir, "plan.md"), "# Plan\n\n## RU-1 — Test\n");
+      await Bun.write(resolve(runDir, "briefs", "RU-1.md"), "# Brief\n\n## Dependencies\n\nNone\n");
+    });
+
+    actions.set("build subagent for unit RU-1", async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await Bun.write(
+        resolve(runDir, "reports", "RU-1.md"),
+        "# Report: RU-1\n\n## L1 — test\n- **Status:** blocked\n- **Reason:** Missing dependency\n",
+      );
+    });
+
+    await run({
+      spec: spec(),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: fakeProviderFactory(actions),
+    });
+
+    const deviations = await readDeviations(repo);
+    const blocked = deviations.filter((d) => d.kind === "blocked");
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]!.unit).toBe("RU-1");
+    expect(blocked[0]!.layer).toBe("L1");
+    expect(blocked[0]!.detail).toBe("Missing dependency");
+    expect(blocked[0]!.pattern).toBe("blocked");
+  });
+
+  test("fence violations produce one 'fence' entry per violated file", async () => {
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      await Bun.write(resolve(runDir, "plan.md"), "# Plan\n\n## RU-1 — Test\n");
+      await Bun.write(
+        resolve(runDir, "briefs", "RU-1.md"),
+        "# Brief\n\n## Layers\n\n### L1\n- **Files:** `src/foo.ts`\n\n## Dependencies\n\nNone\n",
+      );
+    });
+
+    actions.set("build subagent for unit RU-1", async (opts) => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(opts.cwd, "src"), { recursive: true });
+      await Bun.write(resolve(opts.cwd, "src", "foo.ts"), "export const foo = 1;\n");
+      await Bun.write(resolve(opts.cwd, "src", "extra.ts"), "export const extra = 2;\n");
+      await Bun.write(resolve(opts.cwd, "src", "other.ts"), "export const other = 3;\n");
+      const addProc = Bun.spawn(["git", "add", "-A"], { cwd: opts.cwd, stdout: "ignore", stderr: "ignore" });
+      await addProc.exited;
+      const commitProc = Bun.spawn(["git", "commit", "-m", "build"], {
+        cwd: opts.cwd, stdout: "ignore", stderr: "ignore",
+        env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "t@t" },
+      });
+      await commitProc.exited;
+      await Bun.write(resolve(runDir, "reports", "RU-1.md"), "# Report: RU-1\n\n## L1\n- **Status:** done\n- **Files touched:** `src/foo.ts`, `src/extra.ts`, `src/other.ts`\n");
+    });
+
+    actions.set('phase "verify"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await Bun.write(resolve(runDir, "verify.json"), JSON.stringify({ status: "clean", findings: [] }));
+    });
+
+    await run({
+      spec: spec(),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: fakeProviderFactory(actions),
+    });
+
+    const deviations = await readDeviations(repo);
+    const fences = deviations.filter((d) => d.kind === "fence");
+    expect(fences).toHaveLength(2);
+    const files = fences.map((d) => d.file).sort();
+    expect(files).toEqual(["src/extra.ts", "src/other.ts"]);
+    expect(fences[0]!.unit).toBe("RU-1");
+    expect(fences[0]!.pattern).toBe(`fence:${fences[0]!.file}`);
+  });
+
+  test("checkout integrity change produces a 'checkout' entry", async () => {
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      await Bun.write(
+        resolve(runDir, "plan.md"),
+        "# Plan\n\n## RU-1 — Test\n\n### L1 — do stuff\n- **Files:** `src/foo.ts`\n",
+      );
+      await Bun.write(
+        resolve(runDir, "briefs", "RU-1.md"),
+        "# Brief\n\n## Layers\n\n### L1\n- **Files:** `src/foo.ts`\n\n## Dependencies\n\nNone\n",
+      );
+    });
+
+    actions.set("build subagent for unit RU-1", async (opts) => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(opts.cwd, "src"), { recursive: true });
+      await Bun.write(resolve(opts.cwd, "src", "foo.ts"), "export const foo = 1;\n");
+      const addProc = Bun.spawn(["git", "add", "-A"], { cwd: opts.cwd, stdout: "ignore", stderr: "ignore" });
+      await addProc.exited;
+      const commitProc = Bun.spawn(["git", "commit", "-m", "build"], {
+        cwd: opts.cwd, stdout: "ignore", stderr: "ignore",
+        env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "t@t" },
+      });
+      await commitProc.exited;
+      await Bun.write(resolve(runDir, "reports", "RU-1.md"), "# Report: RU-1\n\n## L1\n- **Status:** done\n- **Files touched:** `src/foo.ts`\n");
+      // Write a file into repoRoot to trigger checkout integrity check
+      await Bun.write(resolve(repo, "stray-file.txt"), "stray\n");
+    });
+
+    actions.set('phase "verify"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await Bun.write(resolve(runDir, "verify.json"), JSON.stringify({ status: "clean", findings: [] }));
+    });
+
+    await run({
+      spec: spec(),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: fakeProviderFactory(actions),
+    });
+
+    const deviations = await readDeviations(repo);
+    const checkout = deviations.filter((d) => d.kind === "checkout");
+    expect(checkout).toHaveLength(1);
+    expect(checkout[0]!.unit).toBe("wave-0");
+    expect(checkout[0]!.detail).toContain("checkout changed during wave 0");
+    expect(checkout[0]!.pattern).toBe("checkout");
   });
 });
 
