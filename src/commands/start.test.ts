@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { runStart, formatStartResult } from "./start.ts";
 import { runStatusLines } from "./status.ts";
-import { appendApproval, findRun, writeArtifact } from "../run/store.ts";
+import { appendApproval, appendInvocation, findRun, writeArtifact, type InvocationRecord } from "../run/store.ts";
 import { sha256 } from "../runspec.ts";
 
 let root: string;
@@ -109,5 +109,92 @@ describe("status", () => {
 
     await writeArtifact(run, "runspec.md", `${COMPLETE}\nextra\n`);
     expect((await runStatusLines({ repo })).join("\n")).toContain("no longer matches");
+  });
+
+  test("shows cost/time summary from manifest invocations", async () => {
+    await runStart({ spec: await writeSpec(COMPLETE), repo });
+    const run = await findRun(repo);
+
+    const base: Omit<InvocationRecord, "phase" | "unit" | "duration_ms" | "usage" | "exit_code"> = {
+      ts: new Date().toISOString(),
+      attempt: 1,
+      host: "claude",
+      model: "opus",
+      prompt_sha: "abc123",
+      notes: [],
+    };
+
+    await appendInvocation(run, {
+      ...base,
+      phase: "plan",
+      duration_ms: 298_000,
+      exit_code: 0,
+      usage: { cost_usd: 0.71 },
+    });
+    await appendInvocation(run, {
+      ...base,
+      phase: "build",
+      unit: "RU-1",
+      duration_ms: 200_000,
+      exit_code: 0,
+      usage: { cost_usd: 1.0 },
+    });
+    await appendInvocation(run, {
+      ...base,
+      phase: "build",
+      unit: "RU-2",
+      duration_ms: 250_000,
+      exit_code: 0,
+      usage: { cost_usd: 1.02 },
+    });
+    await appendInvocation(run, {
+      ...base,
+      phase: "build",
+      unit: "RU-2",
+      attempt: 2,
+      duration_ms: 200_000,
+      exit_code: 0,
+      usage: { cost_usd: 1.0 },
+    });
+    await appendInvocation(run, {
+      ...base,
+      phase: "verify",
+      duration_ms: 135_000,
+      exit_code: 0,
+      usage: { cost_usd: 0.4 },
+    });
+
+    const text = (await runStatusLines({ repo })).join("\n");
+
+    expect(text).toContain("plan");
+    expect(text).toContain("$0.71");
+    expect(text).toContain("1 call");
+    expect(text).toContain("3 calls");
+    expect(text).toContain("(RU-1, RU-2 x2)");
+    expect(text).toContain("$0.40");
+    expect(text).toContain("total");
+    expect(text).toContain("$4.13");
+    expect(text).toContain("1083s");
+  });
+
+  test("marks failed calls in cost/time summary", async () => {
+    await runStart({ spec: await writeSpec(COMPLETE), repo });
+    const run = await findRun(repo);
+
+    await appendInvocation(run, {
+      ts: new Date().toISOString(),
+      phase: "plan",
+      attempt: 1,
+      host: "claude",
+      model: "opus",
+      prompt_sha: "abc123",
+      duration_ms: 60_000,
+      exit_code: 1,
+      usage: { cost_usd: 0.3 },
+      notes: [],
+    });
+
+    const text = (await runStatusLines({ repo })).join("\n");
+    expect(text).toContain("(1 failed)");
   });
 });
