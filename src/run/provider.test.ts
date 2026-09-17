@@ -68,6 +68,13 @@ describe("buildClaudeArgs", () => {
     expect(args[args.indexOf("--effort") + 1]).toBe("high");
   });
 
+  test("uses stream-json output format with --verbose", () => {
+    const args = buildClaudeArgs(readOpts);
+    expect(args).toContain("--output-format");
+    expect(args[args.indexOf("--output-format") + 1]).toBe("stream-json");
+    expect(args).toContain("--verbose");
+  });
+
   test("prompt is not in args (goes on stdin)", () => {
     const args = buildClaudeArgs(readOpts);
     // Should have -p flag but no prompt string following it
@@ -106,16 +113,17 @@ describe("buildCodexArgs", () => {
 });
 
 describe("parseClaudeUsage", () => {
-  test("parses a full claude JSON response", () => {
-    const stdout = JSON.stringify({
+  test("parses a full result object", () => {
+    const obj = {
+      type: "result",
       result: "some text",
       usage: { input_tokens: 1000, output_tokens: 500, cache_creation_input_tokens: 200, cache_read_input_tokens: 800 },
       total_cost_usd: 0.42,
       num_turns: 3,
       duration_ms: 12345,
       permission_denials: ["Write", "Edit"],
-    });
-    const usage = parseClaudeUsage(stdout);
+    };
+    const usage = parseClaudeUsage(obj);
     expect(usage).toEqual({
       input_tokens: 1000,
       output_tokens: 500,
@@ -129,11 +137,12 @@ describe("parseClaudeUsage", () => {
   });
 
   test("parses partial usage (no cost, no denials)", () => {
-    const stdout = JSON.stringify({
+    const obj = {
+      type: "result",
       usage: { input_tokens: 100, output_tokens: 50 },
       num_turns: 1,
-    });
-    const usage = parseClaudeUsage(stdout);
+    };
+    const usage = parseClaudeUsage(obj);
     expect(usage).toBeDefined();
     expect(usage!.input_tokens).toBe(100);
     expect(usage!.output_tokens).toBe(50);
@@ -141,17 +150,16 @@ describe("parseClaudeUsage", () => {
     expect(usage!.permission_denials).toBeUndefined();
   });
 
-  test("returns undefined for non-JSON", () => {
-    expect(parseClaudeUsage("not json")).toBeUndefined();
+  test("returns undefined when passed undefined", () => {
+    expect(parseClaudeUsage(undefined)).toBeUndefined();
   });
 
-  test("returns undefined for JSON with no usage fields", () => {
-    expect(parseClaudeUsage(JSON.stringify({ result: "hello" }))).toBeUndefined();
+  test("returns undefined for object with no usage fields", () => {
+    expect(parseClaudeUsage({ type: "result", result: "hello" })).toBeUndefined();
   });
 
   test("zero permission_denials from empty array", () => {
-    const stdout = JSON.stringify({ permission_denials: [] });
-    const usage = parseClaudeUsage(stdout);
+    const usage = parseClaudeUsage({ type: "result", permission_denials: [] });
     expect(usage).toBeDefined();
     expect(usage!.permission_denials).toBe(0);
   });
@@ -191,18 +199,48 @@ describe("parseCodexUsage", () => {
 
 describe("dispatchNotes", () => {
   test("records the session id on success and nothing else", () => {
-    const notes = dispatchNotes({ ok: true, exitCode: 0, stderr: "", stdout: JSON.stringify({ session_id: "abc", result: "done" }) });
+    const notes = dispatchNotes({
+      ok: true, exitCode: 0, stderr: "", stdout: "",
+      result: { type: "result", session_id: "abc", result: "done" },
+    });
     expect(notes).toEqual(["session:abc"]);
   });
 
   test("on failure records the CLI's error subtype and result text", () => {
-    const stdout = JSON.stringify({ session_id: "abc", is_error: true, subtype: "error_max_turns", result: "hit the turn limit" });
-    const notes = dispatchNotes({ ok: false, exitCode: 1, stderr: "", stdout });
+    const notes = dispatchNotes({
+      ok: false, exitCode: 1, stderr: "", stdout: "",
+      result: { type: "result", session_id: "abc", is_error: true, subtype: "error_max_turns", result: "hit the turn limit" },
+    });
     expect(notes).toEqual(["session:abc", "exit 1: error_max_turns — hit the turn limit"]);
   });
 
-  test("on failure without JSON falls back to the stderr tail", () => {
-    const notes = dispatchNotes({ ok: false, exitCode: 2, stderr: "boom", stdout: "not json" });
+  test("on failure without result falls back to the stderr tail", () => {
+    const notes = dispatchNotes({ ok: false, exitCode: 2, stderr: "boom", stdout: "" });
     expect(notes).toEqual(["exit 2: boom"]);
+  });
+
+  test("usage parsed from the last result line of a multi-line stream fixture", () => {
+    // Simulate what spawnProvider would set: result is the parsed last "result" line
+    const resultObj = {
+      type: "result",
+      usage: { input_tokens: 500, output_tokens: 200 },
+      total_cost_usd: 0.15,
+      num_turns: 2,
+      duration_ms: 8000,
+      session_id: "sess-123",
+    };
+    const usage = parseClaudeUsage(resultObj);
+    expect(usage).toEqual({
+      input_tokens: 500,
+      output_tokens: 200,
+      cost_usd: 0.15,
+      num_turns: 2,
+      cli_duration_ms: 8000,
+    });
+    const notes = dispatchNotes({
+      ok: true, exitCode: 0, stdout: "", stderr: "",
+      result: resultObj,
+    });
+    expect(notes).toEqual(["session:sess-123"]);
   });
 });
