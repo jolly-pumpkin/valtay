@@ -26,6 +26,10 @@ export interface DispatchOpts {
   effort?: string;
   /** Environment variables to merge with process.env */
   env?: Record<string, string>;
+  /** Absolute path to append every stdout line to (JSONL log). */
+  logPath?: string;
+  /** Called once per stdout line during streaming. */
+  onEvent?: (line: string) => void;
 }
 
 export interface DispatchResult {
@@ -34,6 +38,14 @@ export interface DispatchResult {
   stdout: string;
   stderr: string;
   usage?: DispatchUsage;
+  /**
+   * The parsed last JSON line whose `type` is "result" from stream-json output.
+   * Set by spawnProvider for claude; undefined for codex or when no result line
+   * appears. parseClaudeUsage and dispatchNotes both read this instead of
+   * parsing stdout as a single JSON object.
+   * stdout stays the raw JSONL (codex already is).
+   */
+  result?: Record<string, unknown>;
 }
 
 export interface Provider {
@@ -70,7 +82,7 @@ export function readOnlyRules(artifactDir?: string): string[] {
  * is always the last thing in argv: the flag is variadic and the prompt is on stdin.
  */
 export function buildClaudeArgs(opts: DispatchOpts): string[] {
-  const args = ["claude", "-p", "--output-format", "json", "--model", opts.model];
+  const args = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", opts.model];
   if (opts.effort) args.push("--effort", opts.effort);
 
   if (opts.write) {
@@ -119,6 +131,11 @@ export function buildCodexArgs(opts: DispatchOpts): string[] {
  * Spawn a provider CLI with the prompt piped to stdin.
  * Both claude and codex accept the prompt on stdin to avoid argv length limits
  * and the variadic-flag trap (design.md §7.2).
+ *
+ * Reads stdout incrementally line-by-line: each line is appended to
+ * opts.logPath (when set), forwarded to opts.onEvent, and collected for the
+ * final result. The last JSON line whose parsed `type` is "result" is stored
+ * as result.result so callers don't need to re-parse the full JSONL.
  */
 async function spawnProvider(
   args: string[],
@@ -133,37 +150,76 @@ async function spawnProvider(
     env: { ...process.env, ...opts.env },
   });
 
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
+  const lines: string[] = [];
+  let resultObj: Record<string, unknown> | undefined;
+  let logFile: Bun.FileSink | undefined;
+
+  if (opts.logPath) {
+    logFile = Bun.file(opts.logPath).writer({ highWaterMark: 1024 });
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for await (const chunk of proc.stdout as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const parts = buffer.split("\n");
+    // Keep the last incomplete part in the buffer
+    buffer = parts.pop()!;
+    for (const line of parts) {
+      if (!line) continue;
+      lines.push(line);
+      if (logFile) logFile.write(line + "\n");
+      opts.onEvent?.(line);
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.type === "result") resultObj = parsed;
+      } catch { /* not JSON, skip */ }
+    }
+  }
+  // Flush remaining buffer
+  if (buffer) {
+    lines.push(buffer);
+    if (logFile) logFile.write(buffer + "\n");
+    opts.onEvent?.(buffer);
+    try {
+      const parsed = JSON.parse(buffer);
+      if (parsed.type === "result") resultObj = parsed;
+    } catch { /* not JSON, skip */ }
+  }
+
+  if (logFile) logFile.end();
+
+  const [stderr, exitCode] = await Promise.all([
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
 
-  return { ok: exitCode === 0, exitCode, stdout: stdout.trim(), stderr: stderr.trim() };
+  const stdout = lines.join("\n");
+  return { ok: exitCode === 0, exitCode, stdout, stderr: stderr.trim(), result: resultObj };
 }
 
 /**
- * Parse claude `--output-format json` stdout into DispatchUsage.
- * Returns undefined if the output cannot be parsed.
+ * Parse the claude result object into DispatchUsage.
+ * Accepts the parsed result object (from DispatchResult.result) instead of
+ * raw stdout. Returns undefined when the object is undefined or has no
+ * usage fields.
  */
-export function parseClaudeUsage(stdout: string): DispatchUsage | undefined {
-  try {
-    const obj = JSON.parse(stdout);
-    const usage: DispatchUsage = {};
-    if (obj.usage) {
-      if (typeof obj.usage.input_tokens === "number") usage.input_tokens = obj.usage.input_tokens;
-      if (typeof obj.usage.output_tokens === "number") usage.output_tokens = obj.usage.output_tokens;
-      if (typeof obj.usage.cache_creation_input_tokens === "number") usage.cache_creation_input_tokens = obj.usage.cache_creation_input_tokens;
-      if (typeof obj.usage.cache_read_input_tokens === "number") usage.cache_read_input_tokens = obj.usage.cache_read_input_tokens;
-    }
-    if (typeof obj.total_cost_usd === "number") usage.cost_usd = obj.total_cost_usd;
-    if (typeof obj.num_turns === "number") usage.num_turns = obj.num_turns;
-    if (typeof obj.duration_ms === "number") usage.cli_duration_ms = obj.duration_ms;
-    if (Array.isArray(obj.permission_denials)) usage.permission_denials = obj.permission_denials.length;
-    return Object.keys(usage).length > 0 ? usage : undefined;
-  } catch {
-    return undefined;
+export function parseClaudeUsage(obj: Record<string, unknown> | undefined): DispatchUsage | undefined {
+  if (!obj) return undefined;
+  const usage: DispatchUsage = {};
+  const u = obj.usage as Record<string, unknown> | undefined;
+  if (u) {
+    if (typeof u.input_tokens === "number") usage.input_tokens = u.input_tokens;
+    if (typeof u.output_tokens === "number") usage.output_tokens = u.output_tokens;
+    if (typeof u.cache_creation_input_tokens === "number") usage.cache_creation_input_tokens = u.cache_creation_input_tokens;
+    if (typeof u.cache_read_input_tokens === "number") usage.cache_read_input_tokens = u.cache_read_input_tokens;
   }
+  if (typeof obj.total_cost_usd === "number") usage.cost_usd = obj.total_cost_usd;
+  if (typeof obj.num_turns === "number") usage.num_turns = obj.num_turns;
+  if (typeof obj.duration_ms === "number") usage.cli_duration_ms = obj.duration_ms;
+  if (Array.isArray(obj.permission_denials)) usage.permission_denials = (obj.permission_denials as unknown[]).length;
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 /**
@@ -174,15 +230,14 @@ export function parseClaudeUsage(stdout: string): DispatchUsage | undefined {
  */
 export function dispatchNotes(result: DispatchResult): string[] {
   const notes: string[] = [];
-  let obj: Record<string, unknown> | undefined;
-  try { obj = JSON.parse(result.stdout); } catch { /* not claude json */ }
+  const obj = result.result;
 
   if (obj && typeof obj["session_id"] === "string") notes.push(`session:${obj["session_id"]}`);
 
   if (!result.ok) {
     const parts: string[] = [];
-    if (obj && typeof obj["subtype"] === "string") parts.push(obj["subtype"]);
-    if (obj && obj["is_error"] === true && typeof obj["result"] === "string") parts.push(obj["result"].slice(0, 300));
+    if (obj && typeof obj["subtype"] === "string") parts.push(obj["subtype"] as string);
+    if (obj && obj["is_error"] === true && typeof obj["result"] === "string") parts.push((obj["result"] as string).slice(0, 300));
     if (parts.length === 0 && result.stderr) parts.push(result.stderr.slice(-300));
     notes.push(`exit ${result.exitCode}: ${parts.join(" — ") || "no output"}`);
   }
@@ -218,7 +273,7 @@ function claudeProvider(): Provider {
     name: "claude",
     async dispatch(prompt, opts) {
       const result = await spawnProvider(buildClaudeArgs(opts), prompt, opts);
-      result.usage = parseClaudeUsage(result.stdout);
+      result.usage = parseClaudeUsage(result.result);
       return result;
     },
   };
