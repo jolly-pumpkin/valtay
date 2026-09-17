@@ -5,8 +5,10 @@ import {
   findRun,
   hashArtifact,
   latestDecision,
+  readInvocations,
   readState,
   staleArtifacts,
+  type InvocationRecord,
   type Run,
   type RunState,
 } from "../run/store.ts";
@@ -69,5 +71,63 @@ export async function runStatusLines(options: RunSelector): Promise<string[]> {
     header.push("  warn    the frozen runspec.md no longer matches its recorded hash");
   }
 
-  return [...header, "", ...(await phaseLines(run, state))];
+  return [...header, "", ...(await phaseLines(run, state)), ...(await costTimeLines(run))];
+}
+
+function formatCostTimeSummary(invocations: InvocationRecord[]): string[] {
+  if (invocations.length === 0) return [];
+
+  const phaseOrder = ["plan", "build", "verify"] as const;
+  const lines: string[] = [];
+  let totalDuration = 0;
+  let totalCost = 0;
+
+  for (const phase of phaseOrder) {
+    const calls = invocations.filter((inv) => inv.phase === phase);
+    if (calls.length === 0) continue;
+
+    const duration = calls.reduce((sum, c) => sum + c.duration_ms, 0);
+    const cost = calls.reduce((sum, c) => sum + (c.usage?.cost_usd ?? 0), 0);
+    const failed = calls.filter((c) => c.exit_code !== 0).length;
+
+    totalDuration += duration;
+    totalCost += cost;
+
+    const durationStr = `${Math.round(duration / 1000)}s`;
+    const costStr = `$${cost.toFixed(2)}`;
+    const countStr = `${calls.length} ${calls.length === 1 ? "call" : "calls"}`;
+
+    const extras: string[] = [];
+
+    // Show unit breakdown for phases with units (build)
+    const withUnits = calls.filter((c) => c.unit);
+    if (withUnits.length > 0) {
+      const unitCounts = new Map<string, number>();
+      for (const c of withUnits) {
+        unitCounts.set(c.unit!, (unitCounts.get(c.unit!) ?? 0) + 1);
+      }
+      const parts = [...unitCounts.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([unit, count]) => (count > 1 ? `${unit} x${count}` : unit));
+      extras.push(`(${parts.join(", ")})`);
+    }
+
+    if (failed > 0) {
+      extras.push(`(${failed} failed)`);
+    }
+
+    const suffix = extras.length > 0 ? `   ${extras.join("   ")}` : "";
+    lines.push(`  ${phase.padEnd(8)} ${durationStr.padStart(6)}   ${costStr.padStart(6)}   ${countStr}${suffix}`);
+  }
+
+  const totalDurationStr = `${Math.round(totalDuration / 1000)}s`;
+  const totalCostStr = `$${totalCost.toFixed(2)}`;
+  lines.push(`  ${"total".padEnd(8)} ${totalDurationStr.padStart(6)}   ${totalCostStr.padStart(6)}`);
+
+  return ["", ...lines];
+}
+
+async function costTimeLines(run: Run): Promise<string[]> {
+  const invocations = await readInvocations(run);
+  return formatCostTimeSummary(invocations);
 }

@@ -23,6 +23,7 @@ import {
 import { pathExists } from "../detect.ts";
 import { advance } from "./orchestrator.ts";
 import { providerFor, dispatchNotes, type Provider, type DispatchResult } from "./provider.ts";
+import { formatEvent } from "./progress.ts";
 import { parsePlanUnits, topoSortWaves, parseReport, type PlanUnit } from "./plan-parser.ts";
 import { buildPhasePrompt, buildSubagentPrompt, type PromptContext } from "./prompts.ts";
 import { importGraph, waveConflicts, formatConflicts } from "./fileset.ts";
@@ -214,6 +215,10 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
 
   let state = await readState(theRun);
 
+  // Create logs directory for streaming event logs
+  const logsDir = resolve(theRun.dir, "logs");
+  await mkdir(logsDir, { recursive: true });
+
   // ── Plan ────────────────────────────────────────────────
   if (state.phase === "plan" && state.status !== "complete") {
     // If rerun, re-dispatch even if artifact exists
@@ -232,6 +237,11 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
       effort: planBinding.effort,
       write: false,
       artifactDir: theRun.dir,
+      logPath: resolve(logsDir, "plan.jsonl"),
+      onEvent: (line) => {
+        const formatted = formatEvent(line, "plan");
+        if (formatted) console.log(formatted);
+      },
     });
 
     await appendInvocation(theRun, {
@@ -413,6 +423,11 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
               env: {
                 VALTAY_FILESET: filesetPath,
                 ...excludeEnv,
+              },
+              logPath: resolve(logsDir, `build-${unit.id}.jsonl`),
+              onEvent: (line) => {
+                const formatted = formatEvent(line, unit.id);
+                if (formatted) console.log(formatted);
               },
             });
 
@@ -608,6 +623,11 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
       effort: verifyBinding.effort,
       write: false,
       artifactDir: theRun.dir,
+      logPath: resolve(logsDir, "verify.jsonl"),
+      onEvent: (line) => {
+        const formatted = formatEvent(line, "verify");
+        if (formatted) console.log(formatted);
+      },
     });
 
     await appendInvocation(theRun, {

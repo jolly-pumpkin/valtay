@@ -596,6 +596,72 @@ interface Foo { bar: string }
     expect(setupInv!.notes[0]).toContain("setup:");
   });
 
+  test("each dispatch carries the right logPath and a working onEvent", async () => {
+    const capturedOpts: Array<{ prompt: string; logPath?: string; onEvent?: (line: string) => void }> = [];
+
+    const factory = (_host: string): Provider => ({
+      name: "fake",
+      async dispatch(prompt: string, opts: DispatchOpts): Promise<DispatchResult> {
+        capturedOpts.push({ prompt, logPath: opts.logPath, onEvent: opts.onEvent });
+
+        if (prompt.includes('phase "plan"')) {
+          const runDir = resolve(repo, ".valtay", "runs", "test-run");
+          await mkdir(resolve(runDir, "briefs"), { recursive: true });
+          await Bun.write(resolve(runDir, "plan.md"), "# Plan\n\n## RU-1 — Test\n");
+          await Bun.write(
+            resolve(runDir, "briefs", "RU-1.md"),
+            "# Brief\n\n## Layers\n\n### L1\n- **Files:** `src/foo.ts`\n\n## Dependencies\n\nNone\n",
+          );
+        } else if (prompt.includes("build subagent for unit RU-1")) {
+          const runDir = resolve(repo, ".valtay", "runs", "test-run");
+          await mkdir(resolve(opts.cwd, "src"), { recursive: true });
+          await Bun.write(resolve(opts.cwd, "src", "foo.ts"), "export const foo = 1;\n");
+          const addProc = Bun.spawn(["git", "add", "-A"], { cwd: opts.cwd, stdout: "ignore", stderr: "ignore" });
+          await addProc.exited;
+          const commitProc = Bun.spawn(["git", "commit", "-m", "build"], {
+            cwd: opts.cwd, stdout: "ignore", stderr: "ignore",
+            env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "t@t" },
+          });
+          await commitProc.exited;
+          await Bun.write(resolve(runDir, "reports", "RU-1.md"), "# Report: RU-1\n\n## L1\n- **Status:** done\n- **Files touched:** `src/foo.ts`\n");
+        } else if (prompt.includes('phase "verify"')) {
+          const runDir = resolve(repo, ".valtay", "runs", "test-run");
+          await Bun.write(resolve(runDir, "verify.json"), JSON.stringify({ status: "clean", findings: [] }));
+        }
+        return { ok: true, exitCode: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    const result = await run({
+      spec: spec(),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: factory,
+    });
+
+    expect(result.outcome).toBe("complete");
+
+    const runDirPath = resolve(repo, ".valtay", "runs", "test-run");
+
+    // Plan dispatch
+    const planCall = capturedOpts.find((c) => c.prompt.includes('phase "plan"'));
+    expect(planCall).toBeDefined();
+    expect(planCall!.logPath).toBe(resolve(runDirPath, "logs", "plan.jsonl"));
+    expect(typeof planCall!.onEvent).toBe("function");
+
+    // Build dispatch
+    const buildCall = capturedOpts.find((c) => c.prompt.includes("build subagent for unit RU-1"));
+    expect(buildCall).toBeDefined();
+    expect(buildCall!.logPath).toBe(resolve(runDirPath, "logs", "build-RU-1.jsonl"));
+    expect(typeof buildCall!.onEvent).toBe("function");
+
+    // Verify dispatch
+    const verifyCall = capturedOpts.find((c) => c.prompt.includes('phase "verify"'));
+    expect(verifyCall).toBeDefined();
+    expect(verifyCall!.logPath).toBe(resolve(runDirPath, "logs", "verify.jsonl"));
+    expect(typeof verifyCall!.onEvent).toBe("function");
+  });
+
   test("setup success is recorded in invocations", async () => {
     const SPEC_WITH_SETUP = `---
 run: test-run
