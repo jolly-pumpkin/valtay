@@ -10,6 +10,7 @@ import { runShow } from "./commands/show.ts";
 import { runCheck } from "./commands/check.ts";
 import { runUpgrade, formatUpgradeResult } from "./commands/upgrade.ts";
 import { runCommand } from "./commands/run.ts";
+import { runLedger } from "./commands/ledger.ts";
 
 const program = new Command()
   .name("valtay")
@@ -125,5 +126,13 @@ program
   .option("--run <name>", "run name (optional when the repo has one run)")
   .option("--repo <path>", "repo root", ".")
   .action((opts) => report(() => runStatusLines(opts)));
+
+program
+  .command("ledger")
+  .description("Deviation recurrence report")
+  .option("--min <n>", "hide patterns with count below N", "1")
+  .option("--backfill", "backfill from existing run artifacts")
+  .option("--repo <path>", "repo root", ".")
+  .action((opts) => report(() => runLedger({ min: Number(opts.min), backfill: opts.backfill, repo: opts.repo })));
 
 await program.parseAsync();
