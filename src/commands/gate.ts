@@ -15,6 +15,8 @@ import {
 import { parsePlanUnits } from "../run/plan-parser.ts";
 import type { VerifyFinding } from "../run/runner.ts";
 import { selectRun, type RunSelector } from "./status.ts";
+import { rm } from "node:fs/promises";
+import { resolve as resolvePath } from "node:path";
 
 export interface GateOptions extends RunSelector {
   gate: string;
@@ -105,6 +107,7 @@ export async function runReject(options: RejectOptions): Promise<string[]> {
 
   // Re-entering at build resets the implicated units; re-entering at plan
   // resets every unit, since the plan that produced them is about to change.
+  let implicatedUnitIds: string[] = [];
   if (target.id === "build" || target.id === "plan") {
     const ledger = await readLedger(run);
     if (ledger) {
@@ -120,6 +123,7 @@ export async function runReject(options: RejectOptions): Promise<string[]> {
         : units;  // all units: --to plan, or no finding names a file
 
       const implicatedIds = new Set(implicated.map((u) => u.id));
+      implicatedUnitIds = [...implicatedIds];
       for (const entry of ledger.units) {
         if (!implicatedIds.has(entry.unit)) continue;
         entry.fenceViolations = [];
@@ -139,10 +143,33 @@ export async function runReject(options: RejectOptions): Promise<string[]> {
     }
   }
 
+  // Re-entering a phase voids every artifact downstream of it, the same way an
+  // edited artifact voids an approval (design §12.3). Without this, advance()
+  // finds the stale verify.json after the rebuild and parks the run on the old
+  // finding without re-running checkpoints or verify (run ledger-v1, 2026-09-17).
+  await voidDownstream(run.dir, target.id, implicatedUnitIds);
+
   return [
     `verify rejected — re-entering at ${target.title}`,
     `  reason  ${options.reason}`,
   ];
+}
+
+/** Artifacts a re-entry at `phase` invalidates. ledger.json survives a build
+ *  re-entry (it carries the pending/done statuses the reset just wrote). */
+export function downstreamArtifacts(phase: string, implicatedUnits: string[]): string[] {
+  const verify = ["verify.json", "checkpoint.md"];
+  const build = ["build.md", ...implicatedUnits.map((u) => `reports/${u}.md`)];
+  const plan = ["plan.md", "briefs", "reports", "ledger.json", "retry.json"];
+  if (phase === "verify") return verify;
+  if (phase === "build") return [...verify, ...build];
+  return [...verify, "build.md", ...plan];
+}
+
+async function voidDownstream(runDir: string, phase: string, implicatedUnits: string[]): Promise<void> {
+  for (const rel of downstreamArtifacts(phase, implicatedUnits)) {
+    await rm(resolvePath(runDir, rel), { recursive: true, force: true });
+  }
 }
 
 function findLayer(ledger: Awaited<ReturnType<typeof readLedger>>, unit: string, layer: string) {

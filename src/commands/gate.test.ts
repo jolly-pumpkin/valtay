@@ -228,13 +228,12 @@ describe("reject", () => {
       reason: "start over",
     });
 
-    // --to plan implicates every unit: the plan that produced them is about to change
+    // --to plan voids the ledger outright: the plan that produced its units is about to change
     const after = await findRun(repo);
     const state = await readState(after);
     expect(state.phase).toBe("plan");
     expect(state.status).toBe("pending");
-    const reset = await readLedger(after);
-    expect(reset!.units[0]!.layers[0]!.status).toBe("pending");
+    expect(await readLedger(after)).toBeNull();
   });
 });
 
@@ -343,5 +342,52 @@ describe("show", () => {
     await runStart({ spec: path, repo });
 
     await expect(runShow({ repo, artifact: "plan.md" })).rejects.toThrow(/No plan.md/);
+  });
+});
+
+describe("reject voids downstream artifacts", () => {
+  const { downstreamArtifacts } = require("./gate.ts") as typeof import("./gate.ts");
+  const { pathExists } = require("../detect.ts") as typeof import("../detect.ts");
+
+  test("--to verify voids verify.json and checkpoint.md only", () => {
+    expect(downstreamArtifacts("verify", ["RU-1"])).toEqual(["verify.json", "checkpoint.md"]);
+  });
+
+  test("--to build also voids build.md and the implicated units' reports, never ledger.json", () => {
+    const v = downstreamArtifacts("build", ["RU-1"]);
+    expect(v).toContain("build.md");
+    expect(v).toContain("reports/RU-1.md");
+    expect(v).not.toContain("reports/RU-2.md");
+    expect(v).not.toContain("ledger.json");
+  });
+
+  test("--to plan voids everything the plan produced", () => {
+    const v = downstreamArtifacts("plan", []);
+    for (const f of ["plan.md", "briefs", "reports", "ledger.json", "verify.json", "checkpoint.md"]) expect(v).toContain(f);
+  });
+
+  test("a rebuild re-entry deletes the stale verify.json and checkpoint.md on disk", async () => {
+    const path = resolve(repo, "runspec.md");
+    await writeFile(path, SPEC);
+    const run = await runStart({ spec: path, repo });
+    await writeArtifact(run, "plan.md", "# Plan\n\n## RU-1 — A\n\n### L1\n- **Files:** `src/a.ts`\n");
+    await mkdir(resolve(run.dir, "briefs"), { recursive: true });
+    await writeFile(resolve(run.dir, "briefs", "RU-1.md"), "# Brief\n\n## Layers\n\n### L1\n- **Files:** `src/a.ts`\n\n## Dependencies\n\nNone\n");
+    await writeArtifact(run, "build.md", "- done");
+    await writeArtifact(run, "checkpoint.md", "## RU-1 — `x` — exit 2 — 1s");
+    await mkdir(resolve(run.dir, "reports"), { recursive: true });
+    await writeFile(resolve(run.dir, "reports", "RU-1.md"), "# Report: RU-1\n\n## L1 — a\n- **Status:** done\n");
+    await writeArtifact(run, "verify.json", JSON.stringify({ status: "drift", findings: [{ what: "w", actual: "a", file: "src/a.ts", severity: "drift" }] }));
+    await writeLedger(run, { units: [{ unit: "RU-1", layers: [{ unit: "RU-1", layer: "L1", status: "done", files: ["src/a.ts"] }] }], updated: "" });
+    const { advance } = await import("../run/orchestrator.ts");
+    await advance(run);
+
+    await runReject({ repo, gate: "verify", to: "build", reason: "fix it" });
+
+    for (const gone of ["verify.json", "checkpoint.md", "build.md", "reports/RU-1.md"]) {
+      expect(await pathExists(resolve(run.dir, gone))).toBe(false);
+    }
+    expect(await pathExists(resolve(run.dir, "ledger.json"))).toBe(true);
+    expect(await pathExists(resolve(run.dir, "rejection.md"))).toBe(true);
   });
 });

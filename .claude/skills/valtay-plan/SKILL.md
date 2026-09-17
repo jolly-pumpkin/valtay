@@ -93,8 +93,17 @@ this unit's layers.
 
 ## Rules
 
-1. **`checkpoint` is a real command** from this repository — the project's own
-   test or run command.
+1. **`checkpoint` is the project's own test script** — for a `package.json`
+   repo, the `scripts.test` entry, invoked as `bun run test` (or the
+   package-manager equivalent). `bun test` alone is **not** it: that skips
+   whatever the script adds, such as `tsc --noEmit`. The runner substitutes the
+   real script if you choose anything else and records that it did.
+   Never prefix it with an install step; the runner runs setup. `valtay init`
+   writes `setup = "bun install --frozen-lockfile"` into `valtay.toml` when it
+   detects `package.json`, and leaves it absent otherwise. The
+   `--frozen-lockfile` flag is required: without it `bun install` may update
+   `bun.lock`, the lockfile lands outside the unit's declared file set, and the
+   fileset hook blocks the unit for a file the runner itself dirtied.
 2. **`files` is the build fence.** A worker on that layer may write those files
    and no others, so list them exactly.
 3. **`alternatives considered` is required and must be real.** At least one
