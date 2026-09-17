@@ -16,6 +16,13 @@ if (!manifest) {
 }
 
 if (!(await filesetAllows(manifest, filePath, process.env.CLAUDE_PROJECT_DIR))) {
+  // Log denial to denials.log
+  const filesetDir = manifest.replace(/\/filesets\/[^/]+$/, "");
+  const denialsPath = `${filesetDir}/hooks/denials.log`;
+  const unitId = manifest.match(/\/filesets\/([^/]+)\.txt$/)?.[1] ?? "unknown";
+  const line = `${new Date().toISOString()}\t${unitId}\t${filePath}\n`;
+  await Bun.write(denialsPath, line, { append: true });
+
   console.error(
     `file outside declared set: ${filePath} — report the layer blocked instead of writing around the fence`
   );
