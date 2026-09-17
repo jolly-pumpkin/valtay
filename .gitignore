@@ -115,3 +115,4 @@ dist
 
 # Valtay local state (run artifacts are per-machine)
 .valtay/
+!.valtay/ledger-project.jsonl

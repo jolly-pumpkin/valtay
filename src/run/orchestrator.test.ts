@@ -18,6 +18,7 @@ import {
   type Run,
 } from "./store.ts";
 import { gateArtifacts } from "./orchestrator.ts";
+import { readDeviations } from "./ledger.ts";
 
 let root: string;
 let repo: string;
@@ -332,5 +333,87 @@ describe("advance", () => {
 
     const state = await readState(run);
     expect(state.status).toBe("failed");
+  });
+
+  test("drift findings from verify.json are appended to the project ledger", async () => {
+    const run = await newRun();
+    await writeArtifact(run, "plan.md", '{"epic":"test"}');
+    await writeArtifact(run, "build.md", "- done");
+    await writeArtifact(
+      run,
+      "verify.json",
+      JSON.stringify({
+        status: "drift",
+        findings: [
+          { what: "Player.health", actual: "missing", file: "src/player.ts", severity: "drift" },
+        ],
+      })
+    );
+
+    await advance(run);
+
+    const deviations = await readDeviations(repo);
+    const drift = deviations.filter((d) => d.kind === "drift");
+    expect(drift).toHaveLength(1);
+    expect(drift[0]!.file).toBe("src/player.ts");
+    expect(drift[0]!.detail).toBe("Player.health: missing");
+    expect(drift[0]!.pattern).toBe("drift:src/player.ts");
+    expect(drift[0]!.run).toBe("test");
+  });
+
+  test("minor findings from verify.json are appended to the project ledger", async () => {
+    const run = await newRun();
+    await writeArtifact(run, "plan.md", '{"epic":"test"}');
+    await writeArtifact(run, "build.md", "- done");
+    await writeArtifact(
+      run,
+      "verify.json",
+      JSON.stringify({
+        status: "clean",
+        findings: [
+          { what: "naming", actual: "camelCase", file: "src/utils.ts", severity: "minor" },
+        ],
+      })
+    );
+
+    await advance(run);
+
+    const deviations = await readDeviations(repo);
+    const minor = deviations.filter((d) => d.kind === "minor");
+    expect(minor).toHaveLength(1);
+    expect(minor[0]!.file).toBe("src/utils.ts");
+    expect(minor[0]!.detail).toBe("naming: camelCase");
+    expect(minor[0]!.pattern).toBe("minor:src/utils.ts");
+  });
+
+  test("findings are appended once even when advance() is called twice", async () => {
+    const run = await newRun();
+    await writeArtifact(run, "plan.md", '{"epic":"test"}');
+    await writeArtifact(run, "build.md", "- done");
+    await writeArtifact(
+      run,
+      "verify.json",
+      JSON.stringify({
+        status: "drift",
+        findings: [
+          { what: "Foo.bar", actual: "number", file: "src/foo.ts", severity: "drift" },
+        ],
+      })
+    );
+
+    await advance(run);
+    // Approve and advance again — findings should not be duplicated
+    const artifacts = await gateArtifacts(run);
+    await appendApproval(run, {
+      ts: new Date().toISOString(),
+      gate: "verify",
+      decision: "approve",
+      artifacts,
+    });
+    await advance(run);
+
+    const deviations = await readDeviations(repo);
+    const drift = deviations.filter((d) => d.kind === "drift");
+    expect(drift).toHaveLength(1);
   });
 });
