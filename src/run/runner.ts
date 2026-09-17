@@ -27,6 +27,7 @@ import { formatEvent } from "./progress.ts";
 import { parsePlanUnits, topoSortWaves, parseReport, type PlanUnit } from "./plan-parser.ts";
 import { buildPhasePrompt, buildSubagentPrompt, type PromptContext } from "./prompts.ts";
 import { importGraph, waveConflicts, formatConflicts } from "./fileset.ts";
+import { appendDeviations, type DeviationEntry } from "./ledger.ts";
 
 /**
  * Run a setup command in the given directory.
@@ -590,6 +591,53 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
         }
 
         await writeLedger(theRun, ledger);
+
+        // Emit deviations to project ledger
+        {
+          const deviations: DeviationEntry[] = [];
+          const ts = new Date().toISOString();
+          for (const result of waveResults) {
+            for (const layer of result.layers) {
+              if (layer.status === "contested") {
+                deviations.push({
+                  ts, run: runName, unit: result.unit, layer: layer.layer,
+                  kind: "contested", detail: layer.reason ?? "(no reason given)",
+                  pattern: "contested",
+                });
+              } else if (layer.status === "blocked") {
+                deviations.push({
+                  ts, run: runName, unit: result.unit, layer: layer.layer,
+                  kind: "blocked", detail: layer.reason ?? "(no reason given)",
+                  pattern: "blocked",
+                });
+              }
+            }
+            const ledgerEntry = ledger.units.find((u) => u.unit === result.unit);
+            const fences = (ledgerEntry?.fenceViolations ?? []).filter(
+              (f) => !f.startsWith("checkout changed"),
+            );
+            for (const file of fences) {
+              deviations.push({
+                ts, run: runName, unit: result.unit,
+                kind: "fence", file, detail: file,
+                pattern: `fence:${file}`,
+              });
+            }
+          }
+          if (preWaveStatus.stdout !== postWaveStatus.stdout) {
+            const pre = (preWaveStatus.stdout ?? "").split("\n").filter(Boolean);
+            const post = (postWaveStatus.stdout ?? "").split("\n").filter(Boolean);
+            const diff = post.filter((l) => !pre.includes(l)).slice(0, 5);
+            deviations.push({
+              ts, run: runName, unit: `wave-${waveIdx}`,
+              kind: "checkout",
+              detail: `checkout changed during wave ${waveIdx}: ${diff.join(", ")}`,
+              pattern: "checkout",
+            });
+          }
+          await appendDeviations(repoRoot, deviations);
+        }
+
         waveIdx++;
       }
 
