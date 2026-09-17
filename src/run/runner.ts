@@ -446,6 +446,28 @@ export async function run(opts: RunnerOpts): Promise<RunResult> {
               notes: dispatchNotes(result),
             });
 
+            // Count hook denials for this unit
+            const denialsPath = resolve(theRun.dir, "hooks", "denials.log");
+            if (await Bun.file(denialsPath).exists()) {
+              const denialsContent = await Bun.file(denialsPath).text();
+              const unitDenials = denialsContent.split("\n")
+                .filter((l) => l.includes(`\t${unit.id}\t`)).length;
+              if (unitDenials > 0) {
+                await appendInvocation(theRun, {
+                  ts: new Date().toISOString(),
+                  phase: "build",
+                  unit: unit.id,
+                  attempt: 1,
+                  host: "runner",
+                  model: "denial-count",
+                  prompt_sha: "",
+                  exit_code: 0,
+                  duration_ms: 0,
+                  notes: [`hook denials: ${unitDenials}`],
+                });
+              }
+            }
+
             const reportContent = await readArtifact(theRun, `reports/${unit.id}.md`);
             const layers: LayerReport[] = reportContent
               ? parseReport(unit.id, reportContent)
