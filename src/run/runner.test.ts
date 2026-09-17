@@ -596,6 +596,62 @@ interface Foo { bar: string }
     expect(setupInv!.notes[0]).toContain("setup:");
   });
 
+  test("integrity-check invocation appears in manifest when checkout changes", async () => {
+    const actions = new Map<string, (opts: DispatchOpts) => Promise<void>>();
+
+    actions.set('phase "plan"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(runDir, "briefs"), { recursive: true });
+      await Bun.write(
+        resolve(runDir, "plan.md"),
+        "# Plan\n\n## RU-1 — Test\n\n### L1 — do stuff\n- **Files:** `src/foo.ts`\n",
+      );
+      await Bun.write(
+        resolve(runDir, "briefs", "RU-1.md"),
+        "# Brief\n\n## Layers\n\n### L1\n- **Files:** `src/foo.ts`\n\n## Dependencies\n\nNone\n",
+      );
+    });
+
+    actions.set("build subagent for unit RU-1", async (opts) => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await mkdir(resolve(opts.cwd, "src"), { recursive: true });
+      await Bun.write(resolve(opts.cwd, "src", "foo.ts"), "export const foo = 1;\n");
+      const addProc = Bun.spawn(["git", "add", "-A"], { cwd: opts.cwd, stdout: "ignore", stderr: "ignore" });
+      await addProc.exited;
+      const commitProc = Bun.spawn(["git", "commit", "-m", "build"], {
+        cwd: opts.cwd, stdout: "ignore", stderr: "ignore",
+        env: { ...process.env, GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "t@t" },
+      });
+      await commitProc.exited;
+      await Bun.write(resolve(runDir, "reports", "RU-1.md"), "# Report: RU-1\n\n## L1\n- **Status:** done\n- **Files touched:** `src/foo.ts`\n");
+      // Write a file into repoRoot (not opts.cwd) to trigger checkout integrity check
+      await Bun.write(resolve(repo, "stray-file.txt"), "stray\n");
+    });
+
+    actions.set('phase "verify"', async () => {
+      const runDir = resolve(repo, ".valtay", "runs", "test-run");
+      await Bun.write(resolve(runDir, "verify.json"), JSON.stringify({ status: "clean", findings: [] }));
+    });
+
+    await run({
+      spec: spec(),
+      repoRoot: repo,
+      runName: "test-run",
+      providerFactory: fakeProviderFactory(actions),
+    });
+
+    const { loadRun } = await import("./store.ts");
+    const theRun = await loadRun(resolve(repo, ".valtay", "runs", "test-run"));
+    const invocations = await readInvocations(theRun);
+
+    const integrityInv = invocations.find(
+      (i) => i.host === "runner" && i.model === "integrity-check",
+    );
+    expect(integrityInv).toBeDefined();
+    expect(integrityInv!.phase).toBe("build");
+    expect(integrityInv!.notes.some((n) => n.includes("checkout changed during wave"))).toBe(true);
+  });
+
   test("each dispatch carries the right logPath and a working onEvent", async () => {
     const capturedOpts: Array<{ prompt: string; logPath?: string; onEvent?: (line: string) => void }> = [];
 
